@@ -1,0 +1,12 @@
+- sudo apt-get install libsdl2-dev libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev libavresample-dev libavutil-dev libpostproc-dev libswresample-dev libswscale-dev 
+
+- Get from github.com/FFmpeg/FFmpeg cmdutils.c/h for the correct ffmpeg installed above (as of this writing it is ffmpeg 4.1)
+
+- In cmdutils.c comment the lines:
+#include "libavutil/libm.h"
+#include "libavformat/network.h"
+
+- It should now build with:
+source build.sh
+
+- Note that GW accel with ffmpeg at the time of writing won't help much since pixel format conversion from YUV to RGB still happens in SW and it is very CPU intensive.
