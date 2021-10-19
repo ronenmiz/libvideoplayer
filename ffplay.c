@@ -1541,12 +1541,6 @@ static void stream_toggle_pause(VideoState *is)
     is->paused = is->audclk.paused = is->vidclk.paused = is->extclk.paused = !is->paused;
 }
 
-static void toggle_pause(VideoState *is)
-{
-    stream_toggle_pause(is);
-    is->step = 0;
-}
-
 static void toggle_mute(VideoState *is)
 {
     is->muted = !is->muted;
@@ -1725,8 +1719,10 @@ retry:
             frame_queue_next(&is->pictq);
             is->force_refresh = 1;
 
-            if (is->step && !is->paused)
+            if (is->step && !is->paused) {
                 stream_toggle_pause(is);
+                is->step = 0;
+            }
         }
 display:
         /* display picture */
@@ -3735,13 +3731,17 @@ void vp_force_refresh(vp_handle_t handle)
 
 void vp_toggle_pause(vp_handle_t handle)
 {
-     toggle_pause((VideoState *) handle);
+    VideoState *is = (VideoState *) handle;
+    if (is->step)
+        is->step = 0;
+    else
+        stream_toggle_pause(is);
 }
 
 int vp_is_paused(vp_handle_t handle)
 {
     VideoState *is = (VideoState *) handle;
-    return is->paused;
+    return is->paused || is->step;
 }
 
 int vp_is_seeking(vp_handle_t handle)
@@ -3765,7 +3765,10 @@ double vp_get_duration(vp_handle_t handle)
 double vp_get_current_time(vp_handle_t handle)
 {
     VideoState *is = (VideoState *) handle;
-    return get_master_clock(is);
+    double pos = get_master_clock(is);
+    if (isnan(pos))
+        pos = (double)is->seek_pos / AV_TIME_BASE;
+    return pos;
 }
 
 void vp_toggle_mute(vp_handle_t handle)
