@@ -3766,7 +3766,7 @@ double vp_get_current_time(vp_handle_t handle)
 {
     VideoState *is = (VideoState *) handle;
     double pos = get_master_clock(is);
-    if (isnan(pos))
+    if (isnan(pos) || is->seek_req)
         pos = (double)is->seek_pos / AV_TIME_BASE;
     return pos;
 }
