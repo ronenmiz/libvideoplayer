@@ -111,9 +111,18 @@ const int program_birth_year = 2003;
 #define USE_ONEPASS_SUBTITLE_RENDER 1
 
 #define FF_QUIT_EVENT (SDL_USEREVENT + 2)
+
+// RONEN - internal events
 #define FF_ADD_STREAM_EVENT (SDL_USEREVENT + 3)
-#define FF_STREAM_OPENED_EVENT (SDL_USEREVENT + 4)
-#define FF_STREAM_SEEKED_EVENT (SDL_USEREVENT + 5)
+
+// RONEN - stream events exported to the user    
+#define FF_FIRST_STREAM_EVENT (SDL_USEREVENT + 4)
+#define FF_STREAM_OPENED_EVENT (FF_FIRST_STREAM_EVENT + VP_STREAM_OPENED_EVENT)
+#define FF_STREAM_PAUSE_EVENT (FF_FIRST_STREAM_EVENT + VP_STREAM_PAUSE_EVENT)
+#define FF_STREAM_PLAY_EVENT (FF_FIRST_STREAM_EVENT + VP_STREAM_PLAY_EVENT)
+#define FF_STREAM_SEEKING_EVENT (FF_FIRST_STREAM_EVENT + VP_STREAM_SEEKING_EVENT)
+#define FF_STREAM_SEEKED_EVENT (FF_FIRST_STREAM_EVENT + VP_STREAM_SEEKED_EVENT)
+#define FF_LAST_STREAM_EVENT FF_STREAM_SEEKED_EVENT
 
 static unsigned sws_flags = SWS_BICUBIC;
 
@@ -1513,6 +1522,14 @@ static void check_external_clock_speed(VideoState *is) {
    }
 }
 
+static void push_event(int event_type, VideoState *is)
+{
+    SDL_Event event;
+    event.type = event_type;
+    event.user.data1 = is;
+    SDL_PushEvent(&event);
+}
+
 /* seek in the stream */
 static void stream_seek(VideoState *is, int64_t pos, int64_t rel, int seek_by_bytes)
 {
@@ -1524,6 +1541,7 @@ static void stream_seek(VideoState *is, int64_t pos, int64_t rel, int seek_by_by
             is->seek_flags |= AVSEEK_FLAG_BYTE;
         is->seek_req = 1;
         SDL_CondSignal(is->continue_read_thread);
+        push_event(FF_STREAM_SEEKING_EVENT, is);
     }
 }
 
@@ -1539,6 +1557,7 @@ static void stream_toggle_pause(VideoState *is)
     }
     set_clock(&is->extclk, get_clock(&is->extclk), is->extclk.serial);
     is->paused = is->audclk.paused = is->vidclk.paused = is->extclk.paused = !is->paused;
+    push_event(is->paused ? FF_STREAM_PAUSE_EVENT : FF_STREAM_PLAY_EVENT, is);
 }
 
 static void toggle_mute(VideoState *is)
@@ -2972,10 +2991,7 @@ static int read_thread(void *arg)
         infinite_buffer = 1;
 
     // RONEN - finished opening the file
-    SDL_Event event;
-    event.type = FF_STREAM_OPENED_EVENT;
-    event.user.data1 = is;
-    SDL_PushEvent(&event);
+    push_event(FF_STREAM_OPENED_EVENT, is);
 
     for (;;) {
         if (is->abort_request)
@@ -3033,10 +3049,8 @@ static int read_thread(void *arg)
             if (is->paused)
                 step_to_next_frame(is);
 
-            SDL_Event event;
-            event.type = FF_STREAM_SEEKED_EVENT;
-            event.user.data1 = is;
-            SDL_PushEvent(&event);                
+            // RONEN - finished seeking
+            push_event(FF_STREAM_SEEKED_EVENT, is);
         }
         if (is->queue_attachments_req) {
             if (is->video_st && is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC) {
@@ -3674,11 +3688,7 @@ vp_handle_t vp_open(const char *url, int is_paused, int is_auto_resize, int is_o
     if ((is_paused && !is->paused) || (!is_paused && is->paused))
         stream_toggle_pause(is);
 
-    SDL_Event event;
-    event.type = FF_ADD_STREAM_EVENT;
-    event.user.data1 = is;
-    SDL_PushEvent(&event);
-
+    push_event(FF_ADD_STREAM_EVENT, is);
     return is;
 }
 
@@ -3853,18 +3863,22 @@ void vp_seek(vp_handle_t handle, double pos)
     }
 }
 
-int vp_is_event_stream_opened(void *event, vp_handle_t *ret_handle)
+int vp_is_stream_event(void *event, int *event_type, vp_handle_t *ret_handle)
 {
     SDL_Event *e = (SDL_Event *) event;
-    *ret_handle = e->type == FF_STREAM_OPENED_EVENT ? e->user.data1 : NULL;
-    return e->type == FF_STREAM_OPENED_EVENT;
-}
+    if (e->type < FF_FIRST_STREAM_EVENT || e->type > FF_LAST_STREAM_EVENT)
+    {
+        *ret_handle = NULL;
+        return 0;
+    }
 
-int vp_is_event_stream_seeked(void *event, vp_handle_t *ret_handle)
-{
-    SDL_Event *e = (SDL_Event *) event;
-    *ret_handle = e->type == FF_STREAM_SEEKED_EVENT ? e->user.data1 : NULL;
-    return e->type == FF_STREAM_SEEKED_EVENT;
+    if (event_type != NULL)
+        *event_type = e->type - FF_FIRST_STREAM_EVENT;
+
+    if (ret_handle != NULL)
+        *ret_handle = e->user.data1;
+
+    return 1;
 }
 
 void vp_event_loop_custom(vp_event_handler_t event_handler, void *user_data)

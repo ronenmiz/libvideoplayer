@@ -6,6 +6,17 @@
 extern "C" {
 #endif
 
+typedef enum
+{
+    VP_STREAM_NULL_EVENT,
+    VP_STREAM_OPENED_EVENT,
+    VP_STREAM_PAUSE_EVENT,
+    VP_STREAM_PLAY_EVENT,
+    VP_STREAM_SEEKING_EVENT,
+    VP_STREAM_SEEKED_EVENT
+} vp_stream_event_type_t;
+
+
 typedef void *vp_handle_t;
 
 typedef int vp_event_handler_t(void *event, vp_handle_t streams[], size_t count, void *user_data);
@@ -32,9 +43,7 @@ void vp_event_loop(vp_handle_t *handle);
 
 void vp_event_loop_custom(vp_event_handler_t *event_handler, void *user_data);
 
-int vp_is_event_stream_opened(void *event, vp_handle_t *ret_handle);
-
-int vp_is_event_stream_seeked(void *event, vp_handle_t *ret_handle);
+int vp_is_stream_event(void *event, int *event_type, vp_handle_t *ret_handle);
 
 // Force redraw last frame (useful when resizing window)
 void vp_force_refresh(vp_handle_t handle);
