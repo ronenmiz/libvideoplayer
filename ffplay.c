@@ -3863,7 +3863,7 @@ void vp_seek(vp_handle_t handle, double pos)
     }
 }
 
-int vp_is_stream_event(void *event, int *event_type, vp_handle_t *ret_handle)
+int vp_is_stream_event(void *event, vp_stream_event_type_t *event_type, vp_handle_t *ret_handle)
 {
     SDL_Event *e = (SDL_Event *) event;
     if (e->type < FF_FIRST_STREAM_EVENT || e->type > FF_LAST_STREAM_EVENT)
@@ -3873,7 +3873,7 @@ int vp_is_stream_event(void *event, int *event_type, vp_handle_t *ret_handle)
     }
 
     if (event_type != NULL)
-        *event_type = e->type - FF_FIRST_STREAM_EVENT;
+        *event_type = (vp_stream_event_type_t) (e->type - FF_FIRST_STREAM_EVENT);
 
     if (ret_handle != NULL)
         *ret_handle = e->user.data1;

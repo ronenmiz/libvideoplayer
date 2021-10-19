@@ -43,7 +43,7 @@ void vp_event_loop(vp_handle_t *handle);
 
 void vp_event_loop_custom(vp_event_handler_t *event_handler, void *user_data);
 
-int vp_is_stream_event(void *event, int *event_type, vp_handle_t *ret_handle);
+int vp_is_stream_event(void *event, vp_stream_event_type_t *event_type, vp_handle_t *ret_handle);
 
 // Force redraw last frame (useful when resizing window)
 void vp_force_refresh(vp_handle_t handle);
