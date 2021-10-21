@@ -112,9 +112,6 @@ const int program_birth_year = 2003;
 
 #define FF_QUIT_EVENT (SDL_USEREVENT + 2)
 
-// RONEN - internal events
-#define FF_ADD_STREAM_EVENT (SDL_USEREVENT + 3)
-
 // RONEN - stream events exported to the user    
 #define FF_FIRST_STREAM_EVENT (SDL_USEREVENT + 4)
 #define FF_STREAM_OPENED_EVENT (FF_FIRST_STREAM_EVENT + VP_STREAM_OPENED_EVENT)
@@ -417,6 +414,48 @@ static const struct TextureFormatEntry {
     { AV_PIX_FMT_UYVY422,        SDL_PIXELFORMAT_UYVY },
     { AV_PIX_FMT_NONE,           SDL_PIXELFORMAT_UNKNOWN },
 };
+
+// Array of active video streams
+// TODO - this needs to be protected with a mutex since it can be manipulated by more than one thread
+VideoState *streams[10];
+size_t stream_count = 0;
+
+#define MAX_STREAMS (sizeof(streams)/sizeof(streams[0]))
+
+static int find_stream(VideoState *is)
+{
+    size_t i;
+    for (i=0; i < stream_count; i++)
+        if (streams[i] == is)
+            return i;
+    return -1;
+}
+
+static void add_stream(VideoState *is)
+{
+    if (stream_count >= MAX_STREAMS)
+    {
+        fprintf(stderr, "Maximum allowed streams exceeded\n");
+        return;
+    }
+            
+    if (find_stream(is) < 0) {
+        streams[stream_count] = is;
+        stream_count++;
+    }
+}
+
+static void remove_stream(VideoState *is)
+{
+    int ix = find_stream(is);
+    if (ix < 0 || ix >= stream_count)
+        return;
+
+    streams[ix] = streams[stream_count-1];
+    stream_count--;
+}
+
+
 
 #if CONFIG_AVFILTER
 static int opt_add_vfilter(void *optctx, const char *opt, const char *arg)
@@ -3688,12 +3727,13 @@ vp_handle_t vp_open(const char *url, int is_paused, int is_auto_resize, int is_o
     if ((is_paused && !is->paused) || (!is_paused && is->paused))
         stream_toggle_pause(is);
 
-    push_event(FF_ADD_STREAM_EVENT, is);
+    add_stream(is);
     return is;
 }
 
 void vp_close(vp_handle_t handle)
 {
+    remove_stream((VideoState *) handle);
     stream_close((VideoState *) handle);
 }
 
@@ -3884,8 +3924,7 @@ int vp_is_stream_event(void *event, vp_stream_event_type_t *event_type, vp_handl
 void vp_event_loop_custom(vp_event_handler_t event_handler, void *user_data)
 {
     SDL_Event event;
-    VideoState *streams[10];
-    size_t i, stream_count = 0;
+    size_t i;
 
     for (;;) {
         int rc;
@@ -3915,24 +3954,8 @@ void vp_event_loop_custom(vp_event_handler_t event_handler, void *user_data)
         case FF_QUIT_EVENT:
             return;
 
-        case FF_ADD_STREAM_EVENT:
-            if (stream_count < sizeof(streams)/ sizeof(streams[0])) {
-                int found = 0;
-                for (i=0; i < stream_count; i++)
-                    if (streams[i] == (vp_handle_t) event.user.data1) {
-                        found = 1;
-                        break;
-                    }
-                if (!found) {
-                    streams[stream_count] = (vp_handle_t) event.user.data1;
-                    stream_count++;
-                }
-            }
-            else
-                fprintf(stderr, "Maximum allowed streams exceeded\n");
-            break;
         default:
-            rc = event_handler(&event, (void **)streams, stream_count, user_data);
+            rc = event_handler(&event, user_data);
             if (rc < 0)
                 return; // abort the event loop
             break;
@@ -4125,22 +4148,6 @@ void vp_event_loop(vp_handle_t *handle)
         case FF_QUIT_EVENT:
             return;
 
-        case FF_ADD_STREAM_EVENT:
-            if (stream_count < sizeof(streams)/ sizeof(streams[0])) {
-                int i, found = 0;
-                for (i=0; i < stream_count; i++)
-                    if (streams[i] == (VideoState *) event.user.data1) {
-                        found = 1;
-                        break;
-                    }
-                if (!found) {
-                    streams[stream_count] = (VideoState *) event.user.data1;
-                    stream_count++;
-                }
-            }
-            else
-                av_log(NULL, AV_LOG_ERROR, "Maximum allowed streams exceeded\n");
-            break;
         default:
             break;
         }

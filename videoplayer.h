@@ -19,7 +19,7 @@ typedef enum
 
 typedef void *vp_handle_t;
 
-typedef int vp_event_handler_t(void *event, vp_handle_t streams[], size_t count, void *user_data);
+typedef int vp_event_handler_t(void *event, void *user_data);
 
 
 int vp_init();
