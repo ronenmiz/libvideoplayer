@@ -3335,7 +3335,7 @@ static void toggle_audio_display(VideoState *is)
     }
 }
 
-static int refresh_loop_wait_event(VideoState *is[], size_t count, SDL_Event *event, size_t event_count) {
+static int refresh_loop_wait_event(SDL_Event *event, size_t event_count) {
     double remaining_time = 0.0;
 
     while (1) {
@@ -3353,8 +3353,8 @@ static int refresh_loop_wait_event(VideoState *is[], size_t count, SDL_Event *ev
 
         // RONEN - code below (till SDL_PumpEvents() but excluding it) replaces the above
         int i, is_needs_refresh = 0;
-        for (i=0; i < count; i++)
-            if (is[i]->show_mode != SHOW_MODE_NONE && (!is[i]->paused || is[i]->force_refresh)) {
+        for (i=0; i < stream_count; i++)
+            if (streams[i]->show_mode != SHOW_MODE_NONE && (!streams[i]->paused || streams[i]->force_refresh)) {
                 is_needs_refresh = 1;
                 break;
             }
@@ -3364,8 +3364,8 @@ static int refresh_loop_wait_event(VideoState *is[], size_t count, SDL_Event *ev
         {
             int refreshed = 0;
 
-            for (i=0; i < count; i++)
-                refreshed = refreshed || video_refresh(is[i], &remaining_time);
+            for (i=0; i < stream_count; i++)
+                refreshed = refreshed || video_refresh(streams[i], &remaining_time);
 
             // RONEN - Do it once for all so moved out of video_display()
             if (refreshed)
@@ -3934,7 +3934,7 @@ void vp_event_loop_custom(vp_event_handler_t event_handler, void *user_data)
         int rc, j;
         SDL_Event events[100];
 
-        int event_count = refresh_loop_wait_event(streams, stream_count, events, sizeof(events)/sizeof(events[0]));
+        int event_count = refresh_loop_wait_event(events, sizeof(events)/sizeof(events[0]));
 
         for (j=0; j<event_count; j++)
         {
@@ -3976,15 +3976,14 @@ void vp_event_loop(vp_handle_t *handle)
     VideoState *cur_stream = (VideoState *) handle;
     SDL_Event event;
     double frac;
-    VideoState *streams[10];
-    size_t i, stream_count = 0;
+    size_t i;
 
     streams[stream_count] = cur_stream;
     stream_count++;
 
     for (;;) {
         double x;
-        refresh_loop_wait_event(streams, stream_count, &event, 1);
+        refresh_loop_wait_event( &event, 1);
         switch (event.type) {
         case SDL_KEYDOWN:
             if (exit_on_keydown || event.key.keysym.sym == SDLK_ESCAPE || event.key.keysym.sym == SDLK_q) {
