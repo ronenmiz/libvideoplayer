@@ -3335,7 +3335,7 @@ static void toggle_audio_display(VideoState *is)
     }
 }
 
-static void refresh_loop_wait_event(VideoState *is[], size_t count, SDL_Event *event) {
+static int refresh_loop_wait_event(VideoState *is[], size_t count, SDL_Event *event, size_t event_count) {
     double remaining_time = 0.0;
 
     while (1) {
@@ -3373,8 +3373,14 @@ static void refresh_loop_wait_event(VideoState *is[], size_t count, SDL_Event *e
         }
 
         SDL_PumpEvents();
-        if (SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT))
+        int rc = SDL_PeepEvents(event, event_count, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT);
+        if (rc < 0)
+        {
+            fprintf(stderr, "SDL error: %s\n", SDL_GetError());
             break;
+        }
+        else if (rc > 0)
+            return rc;
     }
 }
 
@@ -3923,42 +3929,44 @@ int vp_is_stream_event(void *event, vp_stream_event_type_t *event_type, vp_handl
 
 void vp_event_loop_custom(vp_event_handler_t event_handler, void *user_data)
 {
-    SDL_Event event;
-    size_t i;
-
     for (;;) {
-        int rc;
+        size_t i;
+        int rc, j;
+        SDL_Event events[100];
 
-        refresh_loop_wait_event(streams, stream_count, &event);
+        int event_count = refresh_loop_wait_event(streams, stream_count, events, sizeof(events)/sizeof(events[0]));
 
-        switch (event.type) {
-        case SDL_WINDOWEVENT:
-            switch (event.window.event) {
-                case SDL_WINDOWEVENT_SIZE_CHANGED:
-                case SDL_WINDOWEVENT_EXPOSED:
-                    for (i=0; i < stream_count; i++) {
-                        if (streams[i]->autoresize && event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
-                        {
-                            vp_set_size(streams[i], event.window.data1, event.window.data2);
-                            if (streams[i]->vis_texture) {
-                                SDL_DestroyTexture(streams[i]->vis_texture);
-                                streams[i]->vis_texture = NULL;
+        for (j=0; j<event_count; j++)
+        {
+            switch (events[j].type) {
+            case SDL_WINDOWEVENT:
+                switch (events[j].window.event) {
+                    case SDL_WINDOWEVENT_SIZE_CHANGED:
+                    case SDL_WINDOWEVENT_EXPOSED:
+                        for (i=0; i < stream_count; i++) {
+                            if (streams[i]->autoresize && events[j].window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
+                            {
+                                vp_set_size(streams[i], events[j].window.data1, events[j].window.data2);
+                                if (streams[i]->vis_texture) {
+                                    SDL_DestroyTexture(streams[i]->vis_texture);
+                                    streams[i]->vis_texture = NULL;
+                                }
                             }
+                            vp_force_refresh(streams[i]);
                         }
-                        vp_force_refresh(streams[i]);
-                    }
+                }
+                break;
+
+            case SDL_QUIT:
+            case FF_QUIT_EVENT:
+                return;
+
+            default:
+                rc = event_handler(events+j, user_data);
+                if (rc < 0)
+                    return; // abort the event loop
+                break;
             }
-            break;
-
-        case SDL_QUIT:
-        case FF_QUIT_EVENT:
-            return;
-
-        default:
-            rc = event_handler(&event, user_data);
-            if (rc < 0)
-                return; // abort the event loop
-            break;
         }
     }
 }
@@ -3976,7 +3984,7 @@ void vp_event_loop(vp_handle_t *handle)
 
     for (;;) {
         double x;
-        refresh_loop_wait_event(streams, stream_count, &event);
+        refresh_loop_wait_event(streams, stream_count, &event, 1);
         switch (event.type) {
         case SDL_KEYDOWN:
             if (exit_on_keydown || event.key.keysym.sym == SDLK_ESCAPE || event.key.keysym.sym == SDLK_q) {
