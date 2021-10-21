@@ -3374,7 +3374,7 @@ static int refresh_loop_wait_event(SDL_Event *event, size_t event_count) {
 
             SDL_LockMutex(streams_mutex);
             for (i=0; i < stream_count; i++)
-                refreshed = refreshed || video_refresh(streams[i], &remaining_time);
+                refreshed = video_refresh(streams[i], &remaining_time) || refreshed;
             SDL_UnlockMutex(streams_mutex);
 
             // RONEN - Do it once for all so moved out of video_display()
