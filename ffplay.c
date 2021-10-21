@@ -416,13 +416,13 @@ static const struct TextureFormatEntry {
 };
 
 // Array of active video streams
-// TODO - this needs to be protected with a mutex since it can be manipulated by more than one thread
 VideoState *streams[10];
 size_t stream_count = 0;
+SDL_mutex *streams_mutex = NULL;
 
 #define MAX_STREAMS (sizeof(streams)/sizeof(streams[0]))
 
-static int find_stream(VideoState *is)
+static int find_stream_unsafe(VideoState *is)
 {
     size_t i;
     for (i=0; i < stream_count; i++)
@@ -433,29 +433,35 @@ static int find_stream(VideoState *is)
 
 static void add_stream(VideoState *is)
 {
+    SDL_LockMutex(streams_mutex);
     if (stream_count >= MAX_STREAMS)
     {
         fprintf(stderr, "Maximum allowed streams exceeded\n");
+        SDL_UnlockMutex(streams_mutex);
         return;
     }
             
-    if (find_stream(is) < 0) {
+    if (find_stream_unsafe(is) < 0) {
         streams[stream_count] = is;
         stream_count++;
     }
+    SDL_UnlockMutex(streams_mutex);
 }
 
 static void remove_stream(VideoState *is)
 {
-    int ix = find_stream(is);
+    SDL_LockMutex(streams_mutex);
+    int ix = find_stream_unsafe(is);
     if (ix < 0 || ix >= stream_count)
+    {
+        SDL_UnlockMutex(streams_mutex);
         return;
+    }
 
     streams[ix] = streams[stream_count-1];
     stream_count--;
+    SDL_UnlockMutex(streams_mutex);
 }
-
-
 
 #if CONFIG_AVFILTER
 static int opt_add_vfilter(void *optctx, const char *opt, const char *arg)
@@ -3353,19 +3359,23 @@ static int refresh_loop_wait_event(SDL_Event *event, size_t event_count) {
 
         // RONEN - code below (till SDL_PumpEvents() but excluding it) replaces the above
         int i, is_needs_refresh = 0;
+        SDL_LockMutex(streams_mutex);
         for (i=0; i < stream_count; i++)
             if (streams[i]->show_mode != SHOW_MODE_NONE && (!streams[i]->paused || streams[i]->force_refresh)) {
                 is_needs_refresh = 1;
                 break;
             }
+        SDL_UnlockMutex(streams_mutex);        
 
         // RONEN - Do it once for all so moved out of video_display()
         if (is_needs_refresh)
         {
             int refreshed = 0;
 
+            SDL_LockMutex(streams_mutex);
             for (i=0; i < stream_count; i++)
                 refreshed = refreshed || video_refresh(streams[i], &remaining_time);
+            SDL_UnlockMutex(streams_mutex);
 
             // RONEN - Do it once for all so moved out of video_display()
             if (refreshed)
@@ -3706,11 +3716,19 @@ int vp_init(void)
         }
     }
 
+    streams_mutex = SDL_CreateMutex();
+    if (!streams_mutex) {
+        av_log(NULL, AV_LOG_FATAL, "SDL_CreateMutex(): %s\n", SDL_GetError());
+        return AVERROR(ENOMEM);
+    }
+
     return 0;
 }
 
 void vp_terminate()
 {
+    if (streams_mutex != NULL)
+        SDL_DestroyMutex(streams_mutex);
     do_exit(NULL);
 }
 
@@ -3943,6 +3961,7 @@ void vp_event_loop(vp_event_handler_t event_handler, void *user_data)
                 switch (events[j].window.event) {
                     case SDL_WINDOWEVENT_SIZE_CHANGED:
                     case SDL_WINDOWEVENT_EXPOSED:
+                        SDL_LockMutex(streams_mutex);
                         for (i=0; i < stream_count; i++) {
                             if (streams[i]->autoresize && events[j].window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
                             {
@@ -3954,6 +3973,8 @@ void vp_event_loop(vp_event_handler_t event_handler, void *user_data)
                             }
                             vp_force_refresh(streams[i]);
                         }
+                        SDL_UnlockMutex(streams_mutex);
+                        break;
                 }
                 break;
 
