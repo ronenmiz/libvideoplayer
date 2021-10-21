@@ -29,7 +29,7 @@ int main(int argc, char **argv)
     }
 
     // vp_event_loop(is1);
-    vp_event_loop(is1);
+    vp_event_loop(NULL, NULL);
 
     vp_close(is1);
     vp_close(is2);

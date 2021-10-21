@@ -38,10 +38,7 @@ void vp_set_size(vp_handle_t handle, int width, int height);
 
 int vp_get_video_size(vp_handle_t handle, int *width, int *height);
 
-// One event loop for all videos, but the handle passed here is the one affected by key/mouse events
-void vp_event_loop(vp_handle_t *handle);
-
-void vp_event_loop_custom(vp_event_handler_t *event_handler, void *user_data);
+void vp_event_loop(vp_event_handler_t *event_handler, void *user_data);
 
 int vp_is_stream_event(void *event, vp_stream_event_type_t *event_type, vp_handle_t *ret_handle);
 

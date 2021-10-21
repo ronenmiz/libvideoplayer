@@ -3927,7 +3927,7 @@ int vp_is_stream_event(void *event, vp_stream_event_type_t *event_type, vp_handl
     return 1;
 }
 
-void vp_event_loop_custom(vp_event_handler_t event_handler, void *user_data)
+void vp_event_loop(vp_event_handler_t event_handler, void *user_data)
 {
     for (;;) {
         size_t i;
@@ -3962,201 +3962,14 @@ void vp_event_loop_custom(vp_event_handler_t event_handler, void *user_data)
                 return;
 
             default:
-                rc = event_handler(events+j, user_data);
-                if (rc < 0)
-                    return; // abort the event loop
-                break;
-            }
-        }
-    }
-}
-
-void vp_event_loop(vp_handle_t *handle)
-{
-    VideoState *cur_stream = (VideoState *) handle;
-    SDL_Event event;
-    double frac;
-    size_t i;
-
-    streams[stream_count] = cur_stream;
-    stream_count++;
-
-    for (;;) {
-        double x;
-        refresh_loop_wait_event( &event, 1);
-        switch (event.type) {
-        case SDL_KEYDOWN:
-            if (exit_on_keydown || event.key.keysym.sym == SDLK_ESCAPE || event.key.keysym.sym == SDLK_q) {
-                return;
-            }
-            // If we don't yet have a window, skip all key events, because read_thread might still be initializing...
-            if (!cur_stream->width)
-                continue;
-            switch (event.key.keysym.sym) {
-            case SDLK_f:
-                vp_toggle_full_screen();
-                for (i=0; i < stream_count; i++)
-                    vp_force_refresh(streams[i]);
-                break;
-            case SDLK_p:
-            case SDLK_SPACE:
-                vp_toggle_pause(cur_stream);
-                break;
-            case SDLK_m:
-                for (i=0; i < stream_count; i++)
-                    vp_toggle_mute(streams[i]);
-                break;
-            case SDLK_KP_MULTIPLY:
-            case SDLK_0:
-                for (i=0; i < stream_count; i++)
-                    vp_update_volume(streams[i], 1);
-                break;
-            case SDLK_KP_DIVIDE:
-            case SDLK_9:
-                for (i=0; i < stream_count; i++)
-                    vp_update_volume(streams[i], 0);
-                break;
-            case SDLK_s: // S: Step to next frame
-                vp_step_to_next_frame(cur_stream);
-                break;
-            case SDLK_a:
-                vp_cycle_channel_audio(cur_stream);
-                break;
-            case SDLK_v:
-                vp_cycle_channel_video(cur_stream);
-                break;
-            case SDLK_c:
-                vp_cycle_channel_video(cur_stream);
-                vp_cycle_channel_audio(cur_stream);
-                vp_cycle_channel_subtitle(cur_stream);
-                break;
-            case SDLK_t:
-                vp_cycle_channel_subtitle(cur_stream);
-                break;
-//             case SDLK_w:
-// #if CONFIG_AVFILTER
-//                 if (cur_stream->show_mode == SHOW_MODE_VIDEO && cur_stream->vfilter_idx < nb_vfilters - 1) {
-//                     if (++cur_stream->vfilter_idx >= nb_vfilters)
-//                         cur_stream->vfilter_idx = 0;
-//                 } else {
-//                     cur_stream->vfilter_idx = 0;
-//                     toggle_audio_display(cur_stream);
-//                 }
-// #else
-//                 toggle_audio_display(cur_stream);
-// #endif
-//                 break;
-            case SDLK_PAGEUP:
-                if (cur_stream->ic->nb_chapters <= 1)
-                    vp_seek_rel(cur_stream, 600.0);
-                else
-                    vp_seek_chapter(cur_stream, 1);
-                break;
-            case SDLK_PAGEDOWN:
-                if (cur_stream->ic->nb_chapters <= 1)
-                    vp_seek_rel(cur_stream, -600.0);
-                else
-                    vp_seek_chapter(cur_stream, -1);
-                break;
-            case SDLK_LEFT:
-                vp_seek_rel(cur_stream, -seek_interval);
-                break;
-            case SDLK_RIGHT:
-                vp_seek_rel(cur_stream, seek_interval);
-                break;
-            case SDLK_UP:
-                vp_seek_rel(cur_stream, 60.0);
-                break;
-            case SDLK_DOWN:
-                vp_seek_rel(cur_stream, -60.0);
-                break;
-            default:
-                break;
-            }
-            break;
-        case SDL_MOUSEBUTTONDOWN:
-            if (exit_on_mousedown) {
-                return;
-            }
-            if (event.button.button == SDL_BUTTON_LEFT) {
-                // detect double click
-                static int64_t last_mouse_left_click = 0;
-                if (av_gettime_relative() - last_mouse_left_click <= 500000) {
-                    vp_toggle_full_screen();
-                    for (i=0; i < stream_count; i++)
-                        vp_force_refresh(streams[i]);
-                    last_mouse_left_click = 0;
-                } else {
-                    last_mouse_left_click = av_gettime_relative();
+                if (event_handler != NULL)
+                {
+                    rc = event_handler(events+j, user_data);
+                    if (rc < 0)
+                        return; // abort the event loop
                 }
+                break;
             }
-        case SDL_MOUSEMOTION:
-            if (cursor_hidden) {
-                SDL_ShowCursor(1);
-                cursor_hidden = 0;
-            }
-            cursor_last_shown = av_gettime_relative();
-            if (event.type == SDL_MOUSEBUTTONDOWN) {
-                if (event.button.button != SDL_BUTTON_RIGHT)
-                    break;
-                x = event.button.x;
-            } else {
-                if (!(event.motion.state & SDL_BUTTON_RMASK))
-                    break;
-                x = event.motion.x;
-            }
-                // RONEN - commented use of global variable since we may have multiple videos
-                if (/*seek_by_bytes ||*/ cur_stream->ic->duration <= 0) {
-                    uint64_t size =  avio_size(cur_stream->ic->pb);
-                    stream_seek(cur_stream, size*x/cur_stream->width, 0, 1);
-                } else {
-                    int64_t ts;
-                    int ns, hh, mm, ss;
-                    int tns, thh, tmm, tss;
-                    tns  = cur_stream->ic->duration / 1000000LL;
-                    thh  = tns / 3600;
-                    tmm  = (tns % 3600) / 60;
-                    tss  = (tns % 60);
-                    frac = x / cur_stream->width;
-                    ns   = frac * tns;
-                    hh   = ns / 3600;
-                    mm   = (ns % 3600) / 60;
-                    ss   = (ns % 60);
-                    av_log(NULL, AV_LOG_INFO,
-                           "Seek to %2.0f%% (%2d:%02d:%02d) of total duration (%2d:%02d:%02d)       \n", frac*100,
-                            hh, mm, ss, thh, tmm, tss);
-                    ts = frac * cur_stream->ic->duration;
-                    if (cur_stream->ic->start_time != AV_NOPTS_VALUE)
-                        ts += cur_stream->ic->start_time;
-                    stream_seek(cur_stream, ts, 0, 0);
-                }
-            break;
-        case SDL_WINDOWEVENT:
-            switch (event.window.event) {
-                case SDL_WINDOWEVENT_SIZE_CHANGED:
-                    screen_width  = event.window.data1;
-                    screen_height = event.window.data2;
-                    for (i=0; i < stream_count; i++) {
-                        if (streams[i]->autoresize)
-                        {
-                            vp_set_size(streams[i], event.window.data1, event.window.data2);
-                            if (streams[i]->vis_texture) {
-                                SDL_DestroyTexture(streams[i]->vis_texture);
-                                streams[i]->vis_texture = NULL;
-                            }
-                        }
-                    }
-                case SDL_WINDOWEVENT_EXPOSED:
-                    for (i=0; i < stream_count; i++)
-                        vp_force_refresh(streams[i]);
-            }
-            break;
-        case SDL_QUIT:
-        case FF_QUIT_EVENT:
-            return;
-
-        default:
-            break;
         }
     }
 }
