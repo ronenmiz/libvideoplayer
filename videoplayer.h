@@ -36,6 +36,8 @@ void vp_set_rect(vp_handle_t handle, int x, int y, int w, int h);
 
 void vp_set_size(vp_handle_t handle, int width, int height);
 
+void vp_get_size(vp_handle_t handle, int *width, int *height);
+
 int vp_get_video_size(vp_handle_t handle, int *width, int *height);
 
 void vp_event_loop(vp_event_handler_t *event_handler, void *user_data);

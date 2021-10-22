@@ -3779,6 +3779,14 @@ void vp_set_size(vp_handle_t handle, int width, int height)
     is->height = height;
 }
 
+void vp_get_size(vp_handle_t handle, int *width, int *height)
+{
+    VideoState *is = (VideoState *) handle;
+
+    *width = is->width;
+    *height = is->height;
+}
+
 int vp_get_video_size(vp_handle_t handle, int *width, int *height)
 {
     VideoState *is = (VideoState *) handle;
@@ -3974,6 +3982,14 @@ void vp_event_loop(vp_event_handler_t event_handler, void *user_data)
                             vp_force_refresh(streams[i]);
                         }
                         SDL_UnlockMutex(streams_mutex);
+
+                        // Also pass it to the event handler
+                        if (event_handler != NULL)
+                        {
+                            rc = event_handler(events+j, user_data);
+                            if (rc < 0)
+                                return; // abort the event loop
+                        }
                         break;
                 }
                 break;
