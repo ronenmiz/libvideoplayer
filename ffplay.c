@@ -422,6 +422,318 @@ SDL_mutex *streams_mutex = NULL;
 
 #define MAX_STREAMS (sizeof(streams)/sizeof(streams[0]))
 
+//******* pet  ********************
+SDL_Texture *img_texture;
+SDL_Window *img_window;
+//SDL_Renderer *img_renderer;
+//****************************************************************
+
+void img_player_init_test(void)
+{
+    int rc;
+
+    rc = SDL_Init(SDL_INIT_EVERYTHING);
+    if (rc != 0)
+    {
+        fprintf(stderr, "error initializing SDL: %s\n", SDL_GetError());
+    }
+    img_window = SDL_CreateWindow("PICTURE TEST", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, default_width, default_height, 0);
+    if (img_window)
+    {
+        renderer = SDL_CreateRenderer(img_window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+        if (!renderer)
+        {
+            // av_log(NULL, AV_LOG_WARNING, "Failed to initialize a hardware accelerated renderer: %s\n", SDL_GetError());
+            fprintf(stderr, "Failed to initialize a hardware accelerated renderer \n");
+            renderer = SDL_CreateRenderer(img_window, -1, 0);
+        }
+
+        if (renderer)
+        {
+
+            if (!SDL_GetRendererInfo(renderer, &renderer_info))
+                fprintf(stderr, "Initialized %s renderer.\n", renderer_info.name);
+            //     av_log(NULL, AV_LOG_VERBOSE, "Initialized %s renderer.\n", renderer_info.name);
+        }
+    }
+
+    //  Create an SDL texture object according to YUV video
+    img_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STATIC, default_width, default_height);
+}
+
+void img_player_close_test(void)
+{
+    //  SDL_Delay(25000);
+    fprintf(stderr, "player_closed \n");
+
+    SDL_DestroyTexture(img_texture);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(img_window);
+    SDL_Quit();
+}
+
+void img_player_loop_test(void)
+{
+    SDL_Event event;
+    int done = 0;
+
+    while (!done)
+    {
+        SDL_WaitEvent(&event);
+        switch (event.type)
+        {
+        case SDL_QUIT:
+        {
+            done = 1;
+            break;
+        }
+        case SDL_KEYDOWN:
+        {
+            switch (event.key.keysym.sym)
+            {
+            case SDLK_ESCAPE: // Выход из программы по нажатию Esc
+            {
+                done = 1;
+                break;
+            }
+            }
+            break;
+        }
+        }
+    }
+}
+
+//***************************************************************
+//**********************************************************
+
+struct buffer_data
+{
+    uint8_t *ptr;
+    size_t size; ///< size left in the buffer
+};
+
+static int read_packet(void *opaque, uint8_t *buf, int buf_size)
+{
+    struct buffer_data *bd = (struct buffer_data *)opaque;
+    buf_size = FFMIN(buf_size, bd->size);
+
+    if (!buf_size)
+        return AVERROR_EOF;
+    //  printf("ptr:%p size:%zu\n", bd->ptr, bd->size);
+
+    /* copy internal buffer data to buf */
+    memcpy(buf, bd->ptr, buf_size);
+    bd->ptr += buf_size;
+    bd->size -= buf_size;
+
+    return buf_size;
+}
+
+int vp_image_render_test(int x, int y, int width, int height, int img_size, int is_frame, void *img_data)
+{
+    AVFormatContext *fmt_ctx = NULL;
+    AVIOContext *avio_ctx = NULL;
+    uint8_t *avio_ctx_buffer = NULL;
+    //  size_t avio_ctx_buffer_size = 4096;
+    AVCodec *codec;
+    AVCodecContext *c = NULL;
+    int rc, codec_opened, rv = 0;
+    AVFrame *dst_frame = NULL;
+    AVPacket pkt;
+
+    size_t avio_ctx_buffer_size = img_size >= 4096 ? 4096 : img_size;
+
+    struct buffer_data bd = {0};
+
+    int codec_id = AV_CODEC_ID_MJPEG;
+
+    /* fill opaque structure used by the AVIOContext read callback */
+    bd.ptr = img_data;
+    bd.size = img_size;
+
+    AVInputFormat *input_format = av_find_input_format("mjpeg");
+    if (input_format == NULL)
+    {
+        rv = -11;
+        goto finish;
+    }
+
+    if (!(fmt_ctx = avformat_alloc_context()))
+    {
+        rv = -1; //AVERROR(ENOMEM);
+        goto finish;
+    }
+
+    avio_ctx_buffer = av_malloc(avio_ctx_buffer_size);
+    if (!avio_ctx_buffer)
+    {
+        rv = -2; // AVERROR(ENOMEM);
+        goto finish;
+    }
+    avio_ctx = avio_alloc_context(avio_ctx_buffer, avio_ctx_buffer_size,
+                                  0, &bd, &read_packet, NULL, NULL);
+    if (!avio_ctx)
+    {
+        rv = -3; // AVERROR(ENOMEM);
+        goto finish;
+    }
+
+    // find the mpeg1 video decoder
+    codec = avcodec_find_decoder(codec_id);
+    if (!codec)
+    {
+        av_log(NULL, AV_LOG_FATAL, "Cannot find mjpeg decoder\n");
+        rv = -4;
+        goto finish;
+    }
+
+    c = avcodec_alloc_context3(codec);
+    if (c == NULL)
+    {
+        av_log(NULL, AV_LOG_FATAL, "Cannot allocate context\n");
+        rv = -5;
+        goto finish;
+    }
+
+    c->width = width;
+    c->height = height;
+    c->pix_fmt = AV_PIX_FMT_YUVJ420P;
+
+    if (avcodec_open2(c, codec, NULL) < 0)
+    {
+        av_log(NULL, AV_LOG_FATAL, "Cannot open context\n");
+        rv = -6;
+        goto finish;
+    }
+    codec_opened = 1;
+
+    fmt_ctx->pb = avio_ctx;
+
+    rc = avformat_open_input(&fmt_ctx, NULL, input_format /* NULL */, NULL);
+    if (rc < 0)
+    {
+        fprintf(stderr, "Could not open input\n");
+        rv = -7;
+        goto finish;
+    }
+
+    // rc = avformat_find_stream_info(fmt_ctx, NULL);
+    // if (rc < 0)
+    // {
+    //     fprintf(stderr, "Could not find stream information\n");
+    //     goto finish;
+    // }
+
+    //   av_dump_format(fmt_ctx, 0, "input_filename", 0);
+
+    av_init_packet(&pkt);
+    pkt.data = NULL; // packet data will be allocated by the decoder
+    pkt.size = 0;
+
+    rc = av_read_frame(fmt_ctx, &pkt);
+    if (rc < 0)
+    {
+        fprintf(stderr, "Error sending a packet for decoding\n");
+        rv = -8;
+        goto finish;
+    }
+
+    dst_frame = av_frame_alloc();
+    if (!dst_frame)
+    {
+        av_log(NULL, AV_LOG_FATAL, "Cannot allocate source frame\n");
+        rv = -9;
+        goto finish;
+    }
+
+    fprintf(stderr, "before avcodec_send_packet \n");
+    rc = avcodec_send_packet(c, &pkt);
+    if (rc == 0)
+    {
+        fprintf(stderr, "after avcodec_send_packet: SUCCESS %d\n", rc);
+    }
+    else if (rc == AVERROR(EAGAIN))
+    {
+        fprintf(stderr, "after avcodec_send_packet: EAGAIN %d\n", rc);
+    }
+    else if (rc == AVERROR_EOF)
+    {
+        fprintf(stderr, "after avcodec_send_packet: AVERROR_EOF %d\n", rc);
+    }
+    else if (rc == AVERROR(EINVAL))
+    {
+        fprintf(stderr, "after avcodec_send_packet: EINVAL %d\n", rc);
+    }
+    else if (rc == AVERROR(ENOMEM))
+    {
+        fprintf(stderr, "after avcodec_send_packet: ENOMEM %d\n", rc);
+    }
+    else
+    {
+        fprintf(stderr, "after avcodec_send_packet: UNKNOWN %d\n", rc);
+    }
+
+    rc = avcodec_receive_frame(c, dst_frame);
+    if (rc == AVERROR(EAGAIN))
+    {
+        fprintf(stderr, "after avcodec_receive_frame: EAGAIN %d\n", rc);
+    }
+    else if (rc == AVERROR_EOF)
+    {
+        fprintf(stderr, "after avcodec_receive_frame: AVERROR_EOF %d\n", rc);
+    }
+    if (rc < 0)
+    {
+        fprintf(stderr, "Error during decoding\n");
+        rv = -10;
+        goto finish;
+    }
+    
+    avcodec_flush_buffers(c);
+
+    rc = SDL_UpdateTexture(img_texture, NULL, dst_frame->data[0], dst_frame->linesize[0]);
+
+    SDL_RenderClear(renderer);
+    //  Copy the updated texture to the renderer
+    SDL_RenderCopy(renderer, img_texture, NULL, NULL);
+    //  Renderer display screen
+    SDL_RenderPresent(renderer);
+    //  SDL_Delay(50);
+
+finish:
+    av_packet_unref(&pkt);
+
+    if (codec_opened)
+        avcodec_close(c);
+
+    if (c != NULL)
+        av_free(c);
+
+    if (dst_frame != NULL)
+    {
+        av_frame_free(&dst_frame);
+    }
+
+    avformat_close_input(&fmt_ctx);
+
+    if (dst_frame != NULL)
+    {
+        if (dst_frame->data[0] != NULL)
+            av_freep(&dst_frame->data[0]);
+        av_frame_free(&dst_frame);
+    }
+    
+    /* note: the internal buffer could have changed, and be != avio_ctx_buffer */
+    if (avio_ctx)
+        av_freep(&avio_ctx->buffer);
+    avio_context_free(&avio_ctx);
+
+    return rv;
+}
+
+//********** pet  ****************************************
+
+
 static int find_stream_unsafe(VideoState *is)
 {
     size_t i;
