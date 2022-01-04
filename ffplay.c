@@ -423,88 +423,22 @@ SDL_mutex *streams_mutex = NULL;
 #define MAX_STREAMS (sizeof(streams)/sizeof(streams[0]))
 
 //******* pet  ********************
-SDL_Texture *img_texture;
-SDL_Window *img_window;
-//SDL_Renderer *img_renderer;
+static SDL_Texture *img_texture = NULL;
+static SDL_Texture *img_fragment_texture = NULL;
+static SDL_Texture *img_argb_fragment_texture = NULL;
+static SDL_Window *img_window;
+static SDL_Renderer *img_renderer;
+static SDL_Rect dest_rectangle;
+static SDL_Rect src_rectangle;
+static AVFrame *img_frame;
+
 //****************************************************************
+//**************************************************************
 
-void img_player_init_test(void)
-{
-    int rc;
+static int video_open(VideoState *is);
 
-    rc = SDL_Init(SDL_INIT_EVERYTHING);
-    if (rc != 0)
-    {
-        fprintf(stderr, "error initializing SDL: %s\n", SDL_GetError());
-    }
-    img_window = SDL_CreateWindow("PICTURE TEST", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, default_width, default_height, 0);
-    if (img_window)
-    {
-        renderer = SDL_CreateRenderer(img_window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-        if (!renderer)
-        {
-            // av_log(NULL, AV_LOG_WARNING, "Failed to initialize a hardware accelerated renderer: %s\n", SDL_GetError());
-            fprintf(stderr, "Failed to initialize a hardware accelerated renderer \n");
-            renderer = SDL_CreateRenderer(img_window, -1, 0);
-        }
-
-        if (renderer)
-        {
-
-            if (!SDL_GetRendererInfo(renderer, &renderer_info))
-                fprintf(stderr, "Initialized %s renderer.\n", renderer_info.name);
-            //     av_log(NULL, AV_LOG_VERBOSE, "Initialized %s renderer.\n", renderer_info.name);
-        }
-    }
-
-    //  Create an SDL texture object according to YUV video
-    img_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STATIC, default_width, default_height);
-}
-
-void img_player_close_test(void)
-{
-    //  SDL_Delay(25000);
-    fprintf(stderr, "player_closed \n");
-
-    SDL_DestroyTexture(img_texture);
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(img_window);
-    SDL_Quit();
-}
-
-void img_player_loop_test(void)
-{
-    SDL_Event event;
-    int done = 0;
-
-    while (!done)
-    {
-        SDL_WaitEvent(&event);
-        switch (event.type)
-        {
-        case SDL_QUIT:
-        {
-            done = 1;
-            break;
-        }
-        case SDL_KEYDOWN:
-        {
-            switch (event.key.keysym.sym)
-            {
-            case SDLK_ESCAPE: // Выход из программы по нажатию Esc
-            {
-                done = 1;
-                break;
-            }
-            }
-            break;
-        }
-        }
-    }
-}
-
-//***************************************************************
-//**********************************************************
+static volatile int img_is_frame;
+static volatile int is_video_playing = 0;
 
 struct buffer_data
 {
@@ -515,13 +449,13 @@ struct buffer_data
 static int read_packet(void *opaque, uint8_t *buf, int buf_size)
 {
     struct buffer_data *bd = (struct buffer_data *)opaque;
+
     buf_size = FFMIN(buf_size, bd->size);
 
     if (!buf_size)
         return AVERROR_EOF;
-    //  printf("ptr:%p size:%zu\n", bd->ptr, bd->size);
+//  printf("ptr:%p size:%zu\n", bd->ptr, bd->size);
 
-    /* copy internal buffer data to buf */
     memcpy(buf, bd->ptr, buf_size);
     bd->ptr += buf_size;
     bd->size -= buf_size;
@@ -529,61 +463,46 @@ static int read_packet(void *opaque, uint8_t *buf, int buf_size)
     return buf_size;
 }
 
-int vp_image_render_test(int x, int y, int width, int height, int img_size, int is_frame, void *img_data)
-{
+// 
+
+ int get_image_frame(int codec_id, char *inp_format, int img_size, void *img_data, AVFrame *frame)
+ {
     AVFormatContext *fmt_ctx = NULL;
     AVIOContext *avio_ctx = NULL;
-    uint8_t *avio_ctx_buffer = NULL;
-    //  size_t avio_ctx_buffer_size = 4096;
+    static uint8_t *avio_ctx_buffer = NULL;
     AVCodec *codec;
     AVCodecContext *c = NULL;
     int rc, codec_opened, rv = 0;
-    AVFrame *dst_frame = NULL;
     AVPacket pkt;
-
-    size_t avio_ctx_buffer_size = img_size >= 4096 ? 4096 : img_size;
+    size_t avio_ctx_buffer_size = 4096;
 
     struct buffer_data bd = {0};
-
-    int codec_id = AV_CODEC_ID_MJPEG;
 
     /* fill opaque structure used by the AVIOContext read callback */
     bd.ptr = img_data;
     bd.size = img_size;
 
-    AVInputFormat *input_format = av_find_input_format("mjpeg");
+    AVInputFormat *input_format = av_find_input_format(inp_format);
     if (input_format == NULL)
-    {
-        rv = -11;
         goto finish;
-    }
 
     if (!(fmt_ctx = avformat_alloc_context()))
-    {
-        rv = -1; //AVERROR(ENOMEM);
         goto finish;
-    }
-
+ 
     avio_ctx_buffer = av_malloc(avio_ctx_buffer_size);
     if (!avio_ctx_buffer)
-    {
-        rv = -2; // AVERROR(ENOMEM);
         goto finish;
-    }
+
     avio_ctx = avio_alloc_context(avio_ctx_buffer, avio_ctx_buffer_size,
                                   0, &bd, &read_packet, NULL, NULL);
     if (!avio_ctx)
-    {
-        rv = -3; // AVERROR(ENOMEM);
         goto finish;
-    }
 
     // find the mpeg1 video decoder
     codec = avcodec_find_decoder(codec_id);
     if (!codec)
     {
         av_log(NULL, AV_LOG_FATAL, "Cannot find mjpeg decoder\n");
-        rv = -4;
         goto finish;
     }
 
@@ -591,147 +510,237 @@ int vp_image_render_test(int x, int y, int width, int height, int img_size, int 
     if (c == NULL)
     {
         av_log(NULL, AV_LOG_FATAL, "Cannot allocate context\n");
-        rv = -5;
         goto finish;
     }
-
-    c->width = width;
-    c->height = height;
-    c->pix_fmt = AV_PIX_FMT_YUVJ420P;
+    
+    if (codec_id == AV_CODEC_ID_PNG)
+        c->thread_count = 1;
 
     if (avcodec_open2(c, codec, NULL) < 0)
     {
         av_log(NULL, AV_LOG_FATAL, "Cannot open context\n");
-        rv = -6;
         goto finish;
     }
     codec_opened = 1;
-
+    
     fmt_ctx->pb = avio_ctx;
 
     rc = avformat_open_input(&fmt_ctx, NULL, input_format /* NULL */, NULL);
     if (rc < 0)
     {
         fprintf(stderr, "Could not open input\n");
-        rv = -7;
         goto finish;
     }
 
-    // rc = avformat_find_stream_info(fmt_ctx, NULL);
-    // if (rc < 0)
-    // {
-    //     fprintf(stderr, "Could not find stream information\n");
-    //     goto finish;
-    // }
-
-    //   av_dump_format(fmt_ctx, 0, "input_filename", 0);
+    rc = avformat_find_stream_info(fmt_ctx, NULL);
+    if (rc < 0)
+    {
+        fprintf(stderr, "Could not find stream information\n");
+        goto finish;
+    }
 
     av_init_packet(&pkt);
-    pkt.data = NULL; // packet data will be allocated by the decoder
-    pkt.size = 0;
 
     rc = av_read_frame(fmt_ctx, &pkt);
     if (rc < 0)
     {
         fprintf(stderr, "Error sending a packet for decoding\n");
-        rv = -8;
         goto finish;
     }
 
-    dst_frame = av_frame_alloc();
-    if (!dst_frame)
-    {
-        av_log(NULL, AV_LOG_FATAL, "Cannot allocate source frame\n");
-        rv = -9;
-        goto finish;
-    }
-
-    fprintf(stderr, "before avcodec_send_packet \n");
     rc = avcodec_send_packet(c, &pkt);
     if (rc == 0)
     {
         fprintf(stderr, "after avcodec_send_packet: SUCCESS %d\n", rc);
     }
-    else if (rc == AVERROR(EAGAIN))
-    {
-        fprintf(stderr, "after avcodec_send_packet: EAGAIN %d\n", rc);
-    }
-    else if (rc == AVERROR_EOF)
-    {
-        fprintf(stderr, "after avcodec_send_packet: AVERROR_EOF %d\n", rc);
-    }
-    else if (rc == AVERROR(EINVAL))
-    {
-        fprintf(stderr, "after avcodec_send_packet: EINVAL %d\n", rc);
-    }
-    else if (rc == AVERROR(ENOMEM))
-    {
-        fprintf(stderr, "after avcodec_send_packet: ENOMEM %d\n", rc);
-    }
-    else
-    {
-        fprintf(stderr, "after avcodec_send_packet: UNKNOWN %d\n", rc);
-    }
 
-    rc = avcodec_receive_frame(c, dst_frame);
-    if (rc == AVERROR(EAGAIN))
-    {
-        fprintf(stderr, "after avcodec_receive_frame: EAGAIN %d\n", rc);
-    }
-    else if (rc == AVERROR_EOF)
-    {
-        fprintf(stderr, "after avcodec_receive_frame: AVERROR_EOF %d\n", rc);
-    }
+    rc = avcodec_receive_frame(c, frame);
     if (rc < 0)
     {
         fprintf(stderr, "Error during decoding\n");
-        rv = -10;
         goto finish;
     }
     
     avcodec_flush_buffers(c);
 
-    rc = SDL_UpdateTexture(img_texture, NULL, dst_frame->data[0], dst_frame->linesize[0]);
-
-    SDL_RenderClear(renderer);
-    //  Copy the updated texture to the renderer
-    SDL_RenderCopy(renderer, img_texture, NULL, NULL);
-    //  Renderer display screen
-    SDL_RenderPresent(renderer);
-    //  SDL_Delay(50);
-
 finish:
-    av_packet_unref(&pkt);
+    if(&pkt != NULL)
+        av_packet_unref(&pkt);
 
     if (codec_opened)
         avcodec_close(c);
 
-    if (c != NULL)
-        av_free(c);
+    // // if (c != NULL)
+    // //     av_free(c);
 
-    if (dst_frame != NULL)
-    {
-        av_frame_free(&dst_frame);
-    }
+    if(c != NULL)
+        avcodec_free_context(&c);
 
-    avformat_close_input(&fmt_ctx);
-
-    if (dst_frame != NULL)
-    {
-        if (dst_frame->data[0] != NULL)
-            av_freep(&dst_frame->data[0]);
-        av_frame_free(&dst_frame);
-    }
+    if(fmt_ctx != NULL)
+        avformat_close_input(&fmt_ctx);
     
+    // if(avio_ctx_buffer != NULL)
+    //     av_freep(avio_ctx_buffer);
+
     /* note: the internal buffer could have changed, and be != avio_ctx_buffer */
     if (avio_ctx)
         av_freep(&avio_ctx->buffer);
     avio_context_free(&avio_ctx);
 
-    return rv;
+    return 0;
+ }
+
+int frame_scale_and_convert(int width, int height, AVFrame *frame, enum AVPixelFormat input_pix_fmt, enum AVPixelFormat output_pix_fmt, uint8_t **argb_buffer, int *argb_linesize)
+{
+    int rc;
+    struct SwsContext *sws_ctx;
+
+    /* create scaling context */
+    sws_ctx = sws_getContext(img_frame->width, img_frame->height, input_pix_fmt,
+                          // img_frame->width, img_frame->height, output_pix_fmt, 
+                             width, height, output_pix_fmt,
+                             SWS_BILINEAR, NULL, NULL, NULL);
+    if (sws_ctx == NULL) 
+    {
+        fprintf(stderr,"Impossible to create scale context for the conversion \n");
+        return -1;
+    }
+
+    /* convert to destination format */
+    rc = sws_scale(sws_ctx, (const uint8_t * const*)img_frame->data,
+                  img_frame->linesize, 0, img_frame->height, 
+                  argb_buffer, argb_linesize);
+    if (rc < 0) 
+    {
+        fprintf(stderr, "Could not convert image\n");
+    }
+ 
+    sws_freeContext(sws_ctx);
+
+    return rc;    
 }
 
-//********** pet  ****************************************
+
+int vp_append(int x, int y, int width, int height, int img_size, int alpha_size, int is_frame,
+                                void *img_data, void *alpha_data)
+{
+    int argb_linesize[4], alpha_linesize[4];
+    uint8_t *argb_buffer[4], *alpha_buffer[4];
+    int rc, codec_id, rv = 0;
+    char *img_inp_format = "mjpeg";
+    char *alpha_inp_format = "png_pipe";
+    enum AVPixelFormat input_pix_fmt = AV_PIX_FMT_YUV420P;
+    enum AVPixelFormat output_pix_fmt = AV_PIX_FMT_RGB32; 
+    enum AVPixelFormat alpha_pix_fmt = AV_PIX_FMT_GRAY8;
+    
+    dest_rectangle.x = x;
+    dest_rectangle.y = y;
+    dest_rectangle.w = width;
+    dest_rectangle.h = height;  
+
+    // get image
+    codec_id = AV_CODEC_ID_MJPEG;
+
+    rc = get_image_frame(codec_id, img_inp_format, img_size, img_data, img_frame);
+    if (rc == 0)
+    {
+        /* buffer is going to be written to raw, no alignment ("1" ?) */
+      //  rc = av_image_alloc(argb_buffer, argb_linesize, img_frame->width, img_frame->height, AV_PIX_FMT_ARGB, 1); 
+        rc = av_image_alloc(argb_buffer, argb_linesize, width, height, output_pix_fmt, 1); 
+        if (rc < 0) 
+        {
+            fprintf(stderr, "Could not allocate destination image\n");
+        }
+        else
+        {
+            rc = frame_scale_and_convert(width, height, img_frame, input_pix_fmt, output_pix_fmt,  argb_buffer, argb_linesize);
+            if (rc < 0) 
+            {
+                fprintf(stderr, "Could not convert destination image\n");
+            }
+        }
+        av_frame_unref(img_frame);     
+    }
+    if (rc < 0)
+        return rc;
+
+    // get alpha
+    codec_id = AV_CODEC_ID_PNG;
+
+    rc = get_image_frame(codec_id, alpha_inp_format, alpha_size, alpha_data, img_frame);
+    // TODO
+    // if (rc == 0)
+    // {
+    //     rc = av_image_alloc(alpha_buffer, alpha_linesize, width, height, alpha_pix_fmt, 1); 
+    //     if (rc < 0) 
+    //     {
+    //         fprintf(stderr, "Could not allocate alpha channel \n");
+    //     }
+    //     else
+    //     {
+    //         rc = frame_scale_and_convert(width, height, img_frame, alpha_pix_fmt, alpha_pix_fmt,  alpha_buffer, alpha_linesize);
+    //         if (rc < 0) 
+    //         {
+    //             fprintf(stderr, "Could not convert alpha channel \n");
+    //         }
+    //         else
+    //         {
+    //             // Copy alpha channel to image
+    //             uint8_t *dst, *src;
+    //             int x, y, dst_line_size = argb_linesize[0], src_line_size = alpha_linesize[0];
+
+    //             dst = argb_buffer[0];
+    //             src = alpha_buffer[0];
+
+    //             for (y = 0; y < height; y++)
+    //             {
+    //                 for (int x=0; x < width; x++)
+    //                     dst[(x<<2)+3] = src[x];
+    //                 dst += dst_line_size;
+    //                 src += src_line_size;
+    //             }
+    //         }
+    //         av_freep(&alpha_buffer[0]);
+    //     } 
+    //     av_frame_unref(img_frame);     
+    // }
+    if (rc < 0)
+        return rc;
+
+    //*****************
+    //  if (SDL_SetTextureBlendMode(img_texture, SDL_BLENDMODE_NONE) < 0)
+    //         return -1;
+
+    rc = SDL_UpdateTexture(img_texture, &dest_rectangle, argb_buffer[0], argb_linesize[0]);
+    if(rc != 0)
+    {  
+        fprintf(stderr, "after SDL_UpdateTexture : %d\n", rc);
+        fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
+    }
+
+    av_freep(&argb_buffer[0]);       
+
+    if ((is_frame)&&(!is_video_playing))
+    {
+       rc = SDL_RenderCopy(renderer, img_texture, NULL, NULL);
+       if(rc != 0)
+        {
+            fprintf(stderr, "after SDL_RenderCopy to the window: %d\n", rc);
+            fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
+        }
+        else
+        {
+          //  Renderer display screen
+            if ((is_frame)&&(!is_video_playing))
+                SDL_RenderPresent(renderer);
+        }
+    }
+    img_is_frame = is_frame;
+
+    return rc;
+}                                
+
+//********** pet end ****************************************
 
 
 static int find_stream_unsafe(VideoState *is)
@@ -1698,9 +1707,16 @@ void stream_close(VideoState *is)
 
 static void do_exit(VideoState *is)
 {
-    if (is) {
+    // if (is) {
+    //     stream_close(is);
+    // }
+    if (is->filename != NULL) {
         stream_close(is);
     }
+    // pet tmp
+    if (img_texture != NULL)
+        SDL_DestroyTexture(img_texture);
+    // pet end   
     if (renderer)
         SDL_DestroyRenderer(renderer);
     if (window)
@@ -1734,6 +1750,7 @@ static void set_default_window_size(int width, int height, AVRational sar)
     default_height = rect.h;
 }
 
+
 static int video_open(VideoState *is)
 {
     int w,h;
@@ -1752,6 +1769,7 @@ static int video_open(VideoState *is)
     SDL_ShowWindow(window);
 
     // RONEN
+   // if (is != NULL)  // pet
     if (is->autoresize)
     {
         is->width  = w;
@@ -1772,6 +1790,15 @@ static void video_display(VideoState *is)
     // RONEN - commented it
     // SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     // SDL_RenderClear(renderer);
+
+//  pet tmp
+    if (img_is_frame)
+    {
+       SDL_RenderCopy(renderer, img_texture, NULL, NULL);
+       img_is_frame = 0;
+       is_video_playing =1;
+    }
+//  pet end
 
     if (is->audio_st && is->show_mode != SHOW_MODE_VIDEO)
         video_audio_display(is);
@@ -4034,6 +4061,8 @@ int vp_init(void)
         return AVERROR(ENOMEM);
     }
 
+//SDL_GL_MakeCurrent(window, NULL);
+
     return 0;
 }
 
@@ -4043,6 +4072,54 @@ void vp_terminate()
         SDL_DestroyMutex(streams_mutex);
     do_exit(NULL);
 }
+
+vp_handle_t vpimg_open(const char *url, int is_paused, int is_auto_resize, int is_overlay, int is_low_latency, char *img_mime_type, char *alfa_mime_type )
+{
+    VideoState *is;
+     
+    if(url == NULL)
+    {
+        is = av_mallocz(sizeof(VideoState));
+        is->filename = NULL;
+    }  
+    else
+      is = stream_open(url, NULL);
+
+    if (!is) {
+        av_log(NULL, AV_LOG_FATAL, "Failed to initialize VideoState!\n");
+        do_exit(NULL);
+    }
+
+    is->overlay = is_overlay;
+    is->autoresize = is_auto_resize;
+
+    if (is_low_latency)
+    {
+        av_dict_set(&is->format_opts, "fflags", "nobuffer", 0);
+        av_dict_set(&is->codec_opts, "flags", "low_delay", 0);
+    }
+
+    // pet tmp
+                
+    img_texture = SDL_CreateTexture(renderer,  SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, 1280, 720);
+    if(img_texture == NULL)
+    {  
+        fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
+    }  
+
+    img_frame = av_frame_alloc();
+    if (!img_frame)
+    {
+        fprintf(stderr, "Cannot allocate img frame\n");
+    }
+
+    // pet end  
+
+    video_open(is);
+ 
+    return is;
+}
+
 
 vp_handle_t vp_open(const char *url, int is_paused, int is_auto_resize, int is_overlay, int is_low_latency)
 {
@@ -4069,8 +4146,29 @@ vp_handle_t vp_open(const char *url, int is_paused, int is_auto_resize, int is_o
 
 void vp_close(vp_handle_t handle)
 {
-    remove_stream((VideoState *) handle);
-    stream_close((VideoState *) handle);
+    if (((VideoState *)handle)->filename != NULL)  // pet
+    {
+        remove_stream((VideoState *) handle);
+        stream_close((VideoState *) handle);
+    }
+
+    //remember - in vp_close(ui_vp) -  av_frame_free (&frame);
+   //   SDL_DestroyTexture(img_fragment_texture);
+
+
+    if (img_argb_fragment_texture != NULL)  
+      SDL_DestroyTexture(img_argb_fragment_texture);
+
+    if (img_fragment_texture != NULL)  
+      SDL_DestroyTexture(img_fragment_texture);
+
+    if (img_texture != NULL)  
+      SDL_DestroyTexture(img_texture);
+
+    if (img_frame != NULL)  
+      av_frame_free (&img_frame);
+     
+    
 }
 
 void vp_set_rect(vp_handle_t handle, int x, int y, int w, int h)
