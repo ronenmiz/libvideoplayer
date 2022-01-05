@@ -424,28 +424,17 @@ SDL_mutex *streams_mutex = NULL;
 
 //******* pet  ********************
 static SDL_Texture *img_texture = NULL;
-static SDL_Texture *img_fragment_texture = NULL;
-static SDL_Texture *img_argb_fragment_texture = NULL;
-static SDL_Window *img_window;
-static SDL_Renderer *img_renderer;
 static SDL_Rect dest_rectangle;
-static SDL_Rect src_rectangle;
-static AVFrame *img_frame;
-
-//****************************************************************
-//**************************************************************
-
-static int video_open(VideoState *is);
-
+static AVFrame *img_frame = NULL;
 static volatile int img_is_frame;
-static volatile int is_video_playing = 0;
 
 struct buffer_data
 {
     uint8_t *ptr;
-    size_t size; ///< size left in the buffer
+    size_t size; // size left in the buffer
 };
 
+// read_packet is used by avio_alloc_context as a callback
 static int read_packet(void *opaque, uint8_t *buf, int buf_size)
 {
     struct buffer_data *bd = (struct buffer_data *)opaque;
@@ -454,7 +443,6 @@ static int read_packet(void *opaque, uint8_t *buf, int buf_size)
 
     if (!buf_size)
         return AVERROR_EOF;
-//  printf("ptr:%p size:%zu\n", bd->ptr, bd->size);
 
     memcpy(buf, bd->ptr, buf_size);
     bd->ptr += buf_size;
@@ -463,10 +451,8 @@ static int read_packet(void *opaque, uint8_t *buf, int buf_size)
     return buf_size;
 }
 
-// 
-
- int get_image_frame(int codec_id, char *inp_format, int img_size, void *img_data, AVFrame *frame)
- {
+int get_image_frame(int codec_id, char *inp_format, int img_size, void *img_data, AVFrame *frame)
+{
     AVFormatContext *fmt_ctx = NULL;
     AVIOContext *avio_ctx = NULL;
     static uint8_t *avio_ctx_buffer = NULL;
@@ -498,7 +484,6 @@ static int read_packet(void *opaque, uint8_t *buf, int buf_size)
     if (!avio_ctx)
         goto finish;
 
-    // find the mpeg1 video decoder
     codec = avcodec_find_decoder(codec_id);
     if (!codec)
     {
@@ -570,17 +555,11 @@ finish:
     if (codec_opened)
         avcodec_close(c);
 
-    // // if (c != NULL)
-    // //     av_free(c);
-
     if(c != NULL)
         avcodec_free_context(&c);
 
     if(fmt_ctx != NULL)
         avformat_close_input(&fmt_ctx);
-    
-    // if(avio_ctx_buffer != NULL)
-    //     av_freep(avio_ctx_buffer);
 
     /* note: the internal buffer could have changed, and be != avio_ctx_buffer */
     if (avio_ctx)
@@ -588,7 +567,7 @@ finish:
     avio_context_free(&avio_ctx);
 
     return 0;
- }
+}
 
 int frame_scale_and_convert(int width, int height, AVFrame *frame, enum AVPixelFormat input_pix_fmt, enum AVPixelFormat output_pix_fmt, uint8_t **argb_buffer, int *argb_linesize)
 {
@@ -597,7 +576,7 @@ int frame_scale_and_convert(int width, int height, AVFrame *frame, enum AVPixelF
 
     /* create scaling context */
     sws_ctx = sws_getContext(img_frame->width, img_frame->height, input_pix_fmt,
-                          // img_frame->width, img_frame->height, output_pix_fmt, 
+                        //   img_frame->width, img_frame->height, output_pix_fmt,  //***********  TESTING *******************
                              width, height, output_pix_fmt,
                              SWS_BILINEAR, NULL, NULL, NULL);
     if (sws_ctx == NULL) 
@@ -630,6 +609,7 @@ int vp_append(int x, int y, int width, int height, int img_size, int alpha_size,
     char *img_inp_format = "mjpeg";
     char *alpha_inp_format = "png_pipe";
     enum AVPixelFormat input_pix_fmt = AV_PIX_FMT_YUV420P;
+    // AV_PIX_FMT_RGB32 is handled in an endian-specific manner. This is stored as BGRA on little-endian CPU architectures and ARGB on big-endian CPUs.
     enum AVPixelFormat output_pix_fmt = AV_PIX_FMT_RGB32; 
     enum AVPixelFormat alpha_pix_fmt = AV_PIX_FMT_GRAY8;
     
@@ -638,14 +618,15 @@ int vp_append(int x, int y, int width, int height, int img_size, int alpha_size,
     dest_rectangle.w = width;
     dest_rectangle.h = height;  
 
-    // get image
+    // decode image
+
     codec_id = AV_CODEC_ID_MJPEG;
 
     rc = get_image_frame(codec_id, img_inp_format, img_size, img_data, img_frame);
     if (rc == 0)
     {
-        /* buffer is going to be written to raw, no alignment ("1" ?) */
-      //  rc = av_image_alloc(argb_buffer, argb_linesize, img_frame->width, img_frame->height, AV_PIX_FMT_ARGB, 1); 
+        /* buffer is going to be written to raw, no alignment */
+     //   rc = av_image_alloc(argb_buffer, argb_linesize, img_frame->width, img_frame->height, output_pix_fmt, 1); //***********  TESTING *******************
         rc = av_image_alloc(argb_buffer, argb_linesize, width, height, output_pix_fmt, 1); 
         if (rc < 0) 
         {
@@ -664,52 +645,47 @@ int vp_append(int x, int y, int width, int height, int img_size, int alpha_size,
     if (rc < 0)
         return rc;
 
-    // get alpha
+    // decode alpha
+
     codec_id = AV_CODEC_ID_PNG;
 
     rc = get_image_frame(codec_id, alpha_inp_format, alpha_size, alpha_data, img_frame);
-    // TODO
-    // if (rc == 0)
-    // {
-    //     rc = av_image_alloc(alpha_buffer, alpha_linesize, width, height, alpha_pix_fmt, 1); 
-    //     if (rc < 0) 
-    //     {
-    //         fprintf(stderr, "Could not allocate alpha channel \n");
-    //     }
-    //     else
-    //     {
-    //         rc = frame_scale_and_convert(width, height, img_frame, alpha_pix_fmt, alpha_pix_fmt,  alpha_buffer, alpha_linesize);
-    //         if (rc < 0) 
-    //         {
-    //             fprintf(stderr, "Could not convert alpha channel \n");
-    //         }
-    //         else
-    //         {
-    //             // Copy alpha channel to image
-    //             uint8_t *dst, *src;
-    //             int x, y, dst_line_size = argb_linesize[0], src_line_size = alpha_linesize[0];
+    if (rc == 0)
+    {
+        rc = av_image_alloc(alpha_buffer, alpha_linesize, width, height, alpha_pix_fmt, 4); 
+        if (rc < 0) 
+        {
+            fprintf(stderr, "Could not allocate alpha channel \n");
+        }
+        else
+        {
+            rc = frame_scale_and_convert(width, height, img_frame, alpha_pix_fmt, alpha_pix_fmt, alpha_buffer, alpha_linesize);
+            if (rc < 0) 
+            {
+                fprintf(stderr, "Could not convert alpha channel \n");
+            }
+            else
+            {
+                // Copy alpha channel to image
+                int x, y, dst_line_size = argb_linesize[0], src_line_size = alpha_linesize[0];
+                uint8_t *dst, *src;
 
-    //             dst = argb_buffer[0];
-    //             src = alpha_buffer[0];
-
-    //             for (y = 0; y < height; y++)
-    //             {
-    //                 for (int x=0; x < width; x++)
-    //                     dst[(x<<2)+3] = src[x];
-    //                 dst += dst_line_size;
-    //                 src += src_line_size;
-    //             }
-    //         }
-    //         av_freep(&alpha_buffer[0]);
-    //     } 
-    //     av_frame_unref(img_frame);     
-    // }
+                dst = argb_buffer[0];
+                src = alpha_buffer[0];
+                for (y = 0; y < height; y++)
+                {
+                    for (int x=0; x < width; x++) 
+                        dst[(x<<2)+3] = src[x];
+                    dst += dst_line_size;
+                    src += src_line_size;
+                }
+            }
+            av_freep(&alpha_buffer[0]);
+        } 
+        av_frame_unref(img_frame);     
+    }
     if (rc < 0)
         return rc;
-
-    //*****************
-    //  if (SDL_SetTextureBlendMode(img_texture, SDL_BLENDMODE_NONE) < 0)
-    //         return -1;
 
     rc = SDL_UpdateTexture(img_texture, &dest_rectangle, argb_buffer[0], argb_linesize[0]);
     if(rc != 0)
@@ -720,28 +696,10 @@ int vp_append(int x, int y, int width, int height, int img_size, int alpha_size,
 
     av_freep(&argb_buffer[0]);       
 
-    if ((is_frame)&&(!is_video_playing))
-    {
-       rc = SDL_RenderCopy(renderer, img_texture, NULL, NULL);
-       if(rc != 0)
-        {
-            fprintf(stderr, "after SDL_RenderCopy to the window: %d\n", rc);
-            fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
-        }
-        else
-        {
-          //  Renderer display screen
-            if ((is_frame)&&(!is_video_playing))
-                SDL_RenderPresent(renderer);
-        }
-    }
     img_is_frame = is_frame;
 
     return rc;
 }                                
-
-//********** pet end ****************************************
-
 
 static int find_stream_unsafe(VideoState *is)
 {
@@ -1790,15 +1748,6 @@ static void video_display(VideoState *is)
     // RONEN - commented it
     // SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     // SDL_RenderClear(renderer);
-
-//  pet tmp
-    if (img_is_frame)
-    {
-       SDL_RenderCopy(renderer, img_texture, NULL, NULL);
-       img_is_frame = 0;
-       is_video_playing =1;
-    }
-//  pet end
 
     if (is->audio_st && is->show_mode != SHOW_MODE_VIDEO)
         video_audio_display(is);
@@ -3682,6 +3631,7 @@ static void toggle_audio_display(VideoState *is)
 
 static int refresh_loop_wait_event(SDL_Event *event, size_t event_count) {
     double remaining_time = 0.0;
+    int rc;
 
     while (1) {
         // if (!cursor_hidden && av_gettime_relative() - cursor_last_shown > CURSOR_HIDE_DELAY) {
@@ -3707,7 +3657,7 @@ static int refresh_loop_wait_event(SDL_Event *event, size_t event_count) {
         SDL_UnlockMutex(streams_mutex);        
 
         // RONEN - Do it once for all so moved out of video_display()
-        if (is_needs_refresh)
+        if (is_needs_refresh || img_is_frame)
         {
             int refreshed = 0;
 
@@ -3717,12 +3667,23 @@ static int refresh_loop_wait_event(SDL_Event *event, size_t event_count) {
             SDL_UnlockMutex(streams_mutex);
 
             // RONEN - Do it once for all so moved out of video_display()
-            if (refreshed)
+            if (refreshed || img_is_frame)
+            {
+                if(img_is_frame)
+                {
+                    img_is_frame = 0;   
+                    rc = SDL_RenderCopy(renderer, img_texture, NULL, NULL);
+                    if(rc < 0)
+                    {
+                        fprintf(stderr, "SDL error: %s\n", SDL_GetError());
+                    }
+                }
                 SDL_RenderPresent(renderer);
+            }
         }
-
+        
         SDL_PumpEvents();
-        int rc = SDL_PeepEvents(event, event_count, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT);
+        rc = SDL_PeepEvents(event, event_count, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT);
         if (rc < 0)
         {
             fprintf(stderr, "SDL error: %s\n", SDL_GetError());
@@ -4107,8 +4068,11 @@ vp_handle_t vpimg_open(const char *url, int is_paused, int is_auto_resize, int i
         fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
     }  
 
+    if (SDL_SetTextureBlendMode(img_texture, SDL_BLENDMODE_BLEND) < 0)
+        return NULL;     
+
     img_frame = av_frame_alloc();
-    if (!img_frame)
+    if (img_frame == NULL)
     {
         fprintf(stderr, "Cannot allocate img frame\n");
     }
@@ -4146,29 +4110,17 @@ vp_handle_t vp_open(const char *url, int is_paused, int is_auto_resize, int is_o
 
 void vp_close(vp_handle_t handle)
 {
-    if (((VideoState *)handle)->filename != NULL)  // pet
+    if (((VideoState *)handle)->filename != NULL) 
     {
         remove_stream((VideoState *) handle);
         stream_close((VideoState *) handle);
     }
 
-    //remember - in vp_close(ui_vp) -  av_frame_free (&frame);
-   //   SDL_DestroyTexture(img_fragment_texture);
-
-
-    if (img_argb_fragment_texture != NULL)  
-      SDL_DestroyTexture(img_argb_fragment_texture);
-
-    if (img_fragment_texture != NULL)  
-      SDL_DestroyTexture(img_fragment_texture);
-
     if (img_texture != NULL)  
       SDL_DestroyTexture(img_texture);
 
     if (img_frame != NULL)  
-      av_frame_free (&img_frame);
-     
-    
+      av_frame_free (&img_frame); 
 }
 
 void vp_set_rect(vp_handle_t handle, int x, int y, int w, int h)
