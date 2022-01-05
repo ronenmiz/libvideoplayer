@@ -1665,16 +1665,14 @@ void stream_close(VideoState *is)
 
 static void do_exit(VideoState *is)
 {
-    // if (is) {
-    //     stream_close(is);
-    // }
-    if (is->filename != NULL) {
+    if (is && (is->filename != NULL)) 
+    {
         stream_close(is);
     }
-    // pet tmp
+
     if (img_texture != NULL)
         SDL_DestroyTexture(img_texture);
-    // pet end   
+ 
     if (renderer)
         SDL_DestroyRenderer(renderer);
     if (window)
@@ -1727,7 +1725,6 @@ static int video_open(VideoState *is)
     SDL_ShowWindow(window);
 
     // RONEN
-   // if (is != NULL)  // pet
     if (is->autoresize)
     {
         is->width  = w;
@@ -3671,7 +3668,6 @@ static int refresh_loop_wait_event(SDL_Event *event, size_t event_count) {
             {
                 if(img_is_frame)
                 {
-                    img_is_frame = 0;   
                     rc = SDL_RenderCopy(renderer, img_texture, NULL, NULL);
                     if(rc < 0)
                     {
@@ -4034,7 +4030,7 @@ void vp_terminate()
     do_exit(NULL);
 }
 
-vp_handle_t vpimg_open(const char *url, int is_paused, int is_auto_resize, int is_overlay, int is_low_latency, char *img_mime_type, char *alfa_mime_type )
+vp_handle_t vp_open(const char *url, int is_paused, int is_auto_resize, int is_overlay, int is_low_latency, char *img_mime_type, char *alfa_mime_type)
 {
     VideoState *is;
      
@@ -4046,7 +4042,8 @@ vp_handle_t vpimg_open(const char *url, int is_paused, int is_auto_resize, int i
     else
       is = stream_open(url, NULL);
 
-    if (!is) {
+    if (!is) 
+    {
         av_log(NULL, AV_LOG_FATAL, "Failed to initialize VideoState!\n");
         do_exit(NULL);
     }
@@ -4060,51 +4057,37 @@ vp_handle_t vpimg_open(const char *url, int is_paused, int is_auto_resize, int i
         av_dict_set(&is->codec_opts, "flags", "low_delay", 0);
     }
 
-    // pet tmp
-                
-    img_texture = SDL_CreateTexture(renderer,  SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, 1280, 720);
-    if(img_texture == NULL)
-    {  
-        fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
-    }  
+    if(is->filename == NULL)
+    {           
+        img_texture = SDL_CreateTexture(renderer,  SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, default_width, default_height);
+        if(img_texture == NULL)
+        {  
+            fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
+            av_log(NULL, AV_LOG_FATAL, "Failed to create texture \n");
+            do_exit(NULL);
+        }  
 
-    if (SDL_SetTextureBlendMode(img_texture, SDL_BLENDMODE_BLEND) < 0)
-        return NULL;     
+        if (SDL_SetTextureBlendMode(img_texture, SDL_BLENDMODE_BLEND) < 0)
+        {
+            av_log(NULL, AV_LOG_FATAL, "Cannot switch img_texture to blend mode \n");
+        }
 
-    img_frame = av_frame_alloc();
-    if (img_frame == NULL)
-    {
-        fprintf(stderr, "Cannot allocate img frame\n");
+        img_frame = av_frame_alloc();
+        if (img_frame == NULL)
+        {
+            av_log(NULL, AV_LOG_FATAL, "Cannot allocate img frame \n");
+            do_exit(NULL);
+        }
+        video_open(is);
     }
+    else
+    {
+        if ((is_paused && !is->paused) || (!is_paused && is->paused))
+            stream_toggle_pause(is);
 
-    // pet end  
-
-    video_open(is);
+        add_stream(is);
+    }
  
-    return is;
-}
-
-
-vp_handle_t vp_open(const char *url, int is_paused, int is_auto_resize, int is_overlay, int is_low_latency)
-{
-    VideoState *is = stream_open(url, NULL);
-    if (!is) {
-        av_log(NULL, AV_LOG_FATAL, "Failed to initialize VideoState!\n");
-        do_exit(NULL);
-    }
-    is->overlay = is_overlay;
-    is->autoresize = is_auto_resize;
-
-    if (is_low_latency)
-    {
-        av_dict_set(&is->format_opts, "fflags", "nobuffer", 0);
-        av_dict_set(&is->codec_opts, "flags", "low_delay", 0);
-    }
-
-    if ((is_paused && !is->paused) || (!is_paused && is->paused))
-        stream_toggle_pause(is);
-
-    add_stream(is);
     return is;
 }
 

@@ -16,13 +16,13 @@ int main(int argc, char **argv)
 
     vp_init();
 
-    is1 = vp_open(argv[1], 0, 1, 0, 0);
+    is1 = vp_open(argv[1], 0, 1, 0, 0, NULL, NULL);
     if (!is1) {
         fprintf(stderr, "Failed to initialize video!\n");
         vp_terminate();
     }
 
-    is2 = vp_open("http://localhost:8080/osb/session/ui?session_id=appf&fmt=h264&ts_discon=0", 0, 1, 1, 1);
+    is2 = vp_open("http://localhost:8080/osb/session/ui?session_id=appf&fmt=h264&ts_discon=0", 0, 1, 1, 1, NULL, NULL);
     if (!is2) {
         fprintf(stderr, "Failed to initialize VideoState!\n");
         vp_terminate();
