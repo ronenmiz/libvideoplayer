@@ -422,11 +422,14 @@ SDL_mutex *streams_mutex = NULL;
 
 #define MAX_STREAMS (sizeof(streams)/sizeof(streams[0]))
 
-//******* pet  ********************
+// Global variables used by image stream
 static SDL_Texture *img_texture = NULL;
+SDL_mutex *img_texture_mutex = NULL;
 static SDL_Rect dest_rectangle;
 static AVFrame *img_frame = NULL;
 static volatile int img_is_frame;
+
+static void release_current_context(void);
 
 struct buffer_data
 {
@@ -687,12 +690,15 @@ int vp_append(int x, int y, int width, int height, int img_size, int alpha_size,
     if (rc < 0)
         return rc;
 
+    SDL_LockMutex(img_texture_mutex);
     rc = SDL_UpdateTexture(img_texture, &dest_rectangle, argb_buffer[0], argb_linesize[0]);
     if(rc != 0)
     {  
         fprintf(stderr, "after SDL_UpdateTexture : %d\n", rc);
         fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
     }
+    release_current_context();
+    SDL_UnlockMutex(img_texture_mutex);
 
     av_freep(&argb_buffer[0]);       
 
@@ -3663,7 +3669,7 @@ static int refresh_loop_wait_event(SDL_Event *event, size_t event_count) {
                 refreshed = video_refresh(streams[i], &remaining_time) || refreshed;
             SDL_UnlockMutex(streams_mutex);
 
-            // RONEN - Do it once for all so moved out of video_display()
+            SDL_LockMutex(img_texture_mutex);
             if (refreshed || img_is_frame)
             {
                 if(img_is_frame)
@@ -3676,6 +3682,8 @@ static int refresh_loop_wait_event(SDL_Event *event, size_t event_count) {
                 }
                 SDL_RenderPresent(renderer);
             }
+            release_current_context();
+            SDL_UnlockMutex(img_texture_mutex);
         }
         
         SDL_PumpEvents();
@@ -3922,6 +3930,17 @@ void show_help_default(const char *opt, const char *arg)
            );
 }
 
+// release_current_context provided to work properly with OpenGL context in the multithreading applications.
+static void release_current_context(void) {
+    // When SDL uses opengl|opengle renderer it needs to have a current context of the correct type.
+    // The context can be set internally by functions that manipulate a texture 
+    // but it can only be current for a single thread at a time, and a thread can only have a single context current at a time.
+    // Therefore, when moving a context between threads, you must make it non-current on the old thread before making it current on the new one.
+    if (strspn(renderer_info.name, "opengl") != 0) {
+        SDL_GL_MakeCurrent(window, NULL);
+    }
+}
+
 /* Called from the main */
 int vp_init(void)
 {
@@ -4018,7 +4037,13 @@ int vp_init(void)
         return AVERROR(ENOMEM);
     }
 
-//SDL_GL_MakeCurrent(window, NULL);
+    img_texture_mutex = SDL_CreateMutex();
+    if (!img_texture_mutex) {
+        av_log(NULL, AV_LOG_FATAL, "SDL_CreateMutex(): %s\n", SDL_GetError());
+        return AVERROR(ENOMEM);
+    }
+
+    release_current_context();
 
     return 0;
 }
@@ -4027,6 +4052,8 @@ void vp_terminate()
 {
     if (streams_mutex != NULL)
         SDL_DestroyMutex(streams_mutex);
+    if (img_texture_mutex != NULL)
+        SDL_DestroyMutex(img_texture_mutex);
     do_exit(NULL);
 }
 
@@ -4087,6 +4114,8 @@ vp_handle_t vp_open(const char *url, int is_paused, int is_auto_resize, int is_o
 
         add_stream(is);
     }
+
+    release_current_context();
  
     return is;
 }
