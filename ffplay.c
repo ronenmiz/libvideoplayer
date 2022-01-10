@@ -427,7 +427,8 @@ static SDL_Texture *img_texture = NULL;
 SDL_mutex *img_texture_mutex = NULL;
 static SDL_Rect dest_rectangle;
 static AVFrame *img_frame = NULL;
-static volatile int img_is_frame;
+enum AVPixelFormat img_input_pix_fmt, alpha_input_pix_fmt;
+static volatile int img_is_frame, img_codec_id = AV_CODEC_ID_NONE, alpha_codec_id = AV_CODEC_ID_NONE;
 
 static void release_current_context(void);
 
@@ -454,7 +455,7 @@ static int read_packet(void *opaque, uint8_t *buf, int buf_size)
     return buf_size;
 }
 
-int get_image_frame(int codec_id, char *inp_format, int img_size, void *img_data, AVFrame *frame)
+int get_image_frame(int codec_id, int img_size, void *img_data, AVFrame *frame)
 {
     AVFormatContext *fmt_ctx = NULL;
     AVIOContext *avio_ctx = NULL;
@@ -464,12 +465,18 @@ int get_image_frame(int codec_id, char *inp_format, int img_size, void *img_data
     int rc, codec_opened, rv = 0;
     AVPacket pkt;
     size_t avio_ctx_buffer_size = 4096;
+    char *inp_format = NULL;
 
     struct buffer_data bd = {0};
 
     /* fill opaque structure used by the AVIOContext read callback */
     bd.ptr = img_data;
     bd.size = img_size;
+
+    if(codec_id == AV_CODEC_ID_MJPEG)
+      inp_format = "mjpeg";
+    else if(codec_id == AV_CODEC_ID_PNG)
+      inp_format = "png_pipe";  
 
     AVInputFormat *input_format = av_find_input_format(inp_format);
     if (input_format == NULL)
@@ -572,15 +579,15 @@ finish:
     return 0;
 }
 
-int frame_scale_and_convert(int width, int height, AVFrame *frame, enum AVPixelFormat input_pix_fmt, enum AVPixelFormat output_pix_fmt, uint8_t **argb_buffer, int *argb_linesize)
+int frame_scale_and_convert(int width, int height, AVFrame *frame, enum AVPixelFormat input_pix_fmt, enum AVPixelFormat img_pix_fmt, uint8_t **rgba_buffer, int *rgba_linesize)
 {
     int rc;
     struct SwsContext *sws_ctx;
 
     /* create scaling context */
     sws_ctx = sws_getContext(img_frame->width, img_frame->height, input_pix_fmt,
-                        //   img_frame->width, img_frame->height, output_pix_fmt,  //***********  TESTING *******************
-                             width, height, output_pix_fmt,
+                        //   img_frame->width, img_frame->height, img_pix_fmt,  //***********  TESTING *******************
+                             width, height, img_pix_fmt,
                              SWS_BILINEAR, NULL, NULL, NULL);
     if (sws_ctx == NULL) 
     {
@@ -591,7 +598,7 @@ int frame_scale_and_convert(int width, int height, AVFrame *frame, enum AVPixelF
     /* convert to destination format */
     rc = sws_scale(sws_ctx, (const uint8_t * const*)img_frame->data,
                   img_frame->linesize, 0, img_frame->height, 
-                  argb_buffer, argb_linesize);
+                  rgba_buffer, rgba_linesize);
     if (rc < 0) 
     {
         fprintf(stderr, "Could not convert image\n");
@@ -606,14 +613,12 @@ int frame_scale_and_convert(int width, int height, AVFrame *frame, enum AVPixelF
 int vp_append(int x, int y, int width, int height, int img_size, int alpha_size, int is_frame,
                                 void *img_data, void *alpha_data)
 {
-    int argb_linesize[4], alpha_linesize[4];
-    uint8_t *argb_buffer[4], *alpha_buffer[4];
+    int rgba_linesize[4], alpha_linesize[4];
+    uint8_t *rgba_buffer[4], *alpha_buffer[4];
     int rc, codec_id, rv = 0;
-    char *img_inp_format = "mjpeg";
-    char *alpha_inp_format = "png_pipe";
-    enum AVPixelFormat input_pix_fmt = AV_PIX_FMT_YUV420P;
+ //   enum AVPixelFormat input_pix_fmt = AV_PIX_FMT_BGR32; // AV_PIX_FMT_YUV420P;
     // AV_PIX_FMT_RGB32 is handled in an endian-specific manner. This is stored as BGRA on little-endian CPU architectures and ARGB on big-endian CPUs.
-    enum AVPixelFormat output_pix_fmt = AV_PIX_FMT_RGB32; 
+    enum AVPixelFormat img_pix_fmt = AV_PIX_FMT_RGB32; // AV_PIX_FMT_BGR32_1;  //  AV_PIX_FMT_RGB32; 
     enum AVPixelFormat alpha_pix_fmt = AV_PIX_FMT_GRAY8;
     
     dest_rectangle.x = x;
@@ -622,22 +627,20 @@ int vp_append(int x, int y, int width, int height, int img_size, int alpha_size,
     dest_rectangle.h = height;  
 
     // decode image
-
-    codec_id = AV_CODEC_ID_MJPEG;
-
-    rc = get_image_frame(codec_id, img_inp_format, img_size, img_data, img_frame);
+ 
+    rc = get_image_frame(img_codec_id, img_size, img_data, img_frame);
     if (rc == 0)
     {
         /* buffer is going to be written to raw, no alignment */
-     //   rc = av_image_alloc(argb_buffer, argb_linesize, img_frame->width, img_frame->height, output_pix_fmt, 1); //***********  TESTING *******************
-        rc = av_image_alloc(argb_buffer, argb_linesize, width, height, output_pix_fmt, 1); 
+     //   rc = av_image_alloc(rgba_buffer, rgba_linesize, img_frame->width, img_frame->height, img_pix_fmt, 1); //***********  TESTING *******************
+        rc = av_image_alloc(rgba_buffer, rgba_linesize, width, height, img_pix_fmt, 1); 
         if (rc < 0) 
         {
             fprintf(stderr, "Could not allocate destination image\n");
         }
         else
         {
-            rc = frame_scale_and_convert(width, height, img_frame, input_pix_fmt, output_pix_fmt,  argb_buffer, argb_linesize);
+            rc = frame_scale_and_convert(width, height, img_frame, img_input_pix_fmt, img_pix_fmt,  rgba_buffer, rgba_linesize);
             if (rc < 0) 
             {
                 fprintf(stderr, "Could not convert destination image\n");
@@ -650,48 +653,49 @@ int vp_append(int x, int y, int width, int height, int img_size, int alpha_size,
 
     // decode alpha
 
-    codec_id = AV_CODEC_ID_PNG;
-
-    rc = get_image_frame(codec_id, alpha_inp_format, alpha_size, alpha_data, img_frame);
-    if (rc == 0)
+    if(alpha_codec_id != AV_CODEC_ID_NONE)
     {
-        rc = av_image_alloc(alpha_buffer, alpha_linesize, width, height, alpha_pix_fmt, 4); 
-        if (rc < 0) 
+        rc = get_image_frame(alpha_codec_id, alpha_size, alpha_data, img_frame);
+        if (rc == 0)
         {
-            fprintf(stderr, "Could not allocate alpha channel \n");
-        }
-        else
-        {
-            rc = frame_scale_and_convert(width, height, img_frame, alpha_pix_fmt, alpha_pix_fmt, alpha_buffer, alpha_linesize);
+            rc = av_image_alloc(alpha_buffer, alpha_linesize, width, height, alpha_pix_fmt, 4); 
             if (rc < 0) 
             {
-                fprintf(stderr, "Could not convert alpha channel \n");
+                fprintf(stderr, "Could not allocate alpha channel \n");
             }
             else
             {
-                // Copy alpha channel to image
-                int x, y, dst_line_size = argb_linesize[0], src_line_size = alpha_linesize[0];
-                uint8_t *dst, *src;
-
-                dst = argb_buffer[0];
-                src = alpha_buffer[0];
-                for (y = 0; y < height; y++)
+                rc = frame_scale_and_convert(width, height, img_frame, alpha_input_pix_fmt, alpha_pix_fmt, alpha_buffer, alpha_linesize);
+                if (rc < 0) 
                 {
-                    for (int x=0; x < width; x++) 
-                        dst[(x<<2)+3] = src[x];
-                    dst += dst_line_size;
-                    src += src_line_size;
+                    fprintf(stderr, "Could not convert alpha channel \n");
                 }
-            }
-            av_freep(&alpha_buffer[0]);
-        } 
-        av_frame_unref(img_frame);     
+                else
+                {
+                    // Copy alpha channel to image
+                    int x, y, dst_line_size = rgba_linesize[0], src_line_size = alpha_linesize[0];
+                    uint8_t *dst, *src;
+
+                    dst = rgba_buffer[0];
+                    src = alpha_buffer[0];
+                    for (y = 0; y < height; y++)
+                    {
+                        for (int x=0; x < width; x++) 
+                            dst[(x<<2)+3] = src[x];
+                       dst += dst_line_size;
+                        src += src_line_size;
+                    }
+                }
+                av_freep(&alpha_buffer[0]);
+            } 
+            av_frame_unref(img_frame);     
+        }
+        if (rc < 0)
+            return rc;
     }
-    if (rc < 0)
-        return rc;
 
     SDL_LockMutex(img_texture_mutex);
-    rc = SDL_UpdateTexture(img_texture, &dest_rectangle, argb_buffer[0], argb_linesize[0]);
+    rc = SDL_UpdateTexture(img_texture, &dest_rectangle, rgba_buffer[0], rgba_linesize[0]);
     if(rc != 0)
     {  
         fprintf(stderr, "after SDL_UpdateTexture : %d\n", rc);
@@ -700,7 +704,7 @@ int vp_append(int x, int y, int width, int height, int img_size, int alpha_size,
     release_current_context();
     SDL_UnlockMutex(img_texture_mutex);
 
-    av_freep(&argb_buffer[0]);       
+    av_freep(&rgba_buffer[0]);       
 
     img_is_frame = is_frame;
 
@@ -3674,7 +3678,10 @@ static int refresh_loop_wait_event(SDL_Event *event, size_t event_count) {
             {
                 if(img_is_frame)
                 {
+                    img_is_frame = 0;
+                    SDL_LockMutex(streams_mutex);
                     rc = SDL_RenderCopy(renderer, img_texture, NULL, NULL);
+                    SDL_UnlockMutex(streams_mutex);
                     if(rc < 0)
                     {
                         fprintf(stderr, "SDL error: %s\n", SDL_GetError());
@@ -3936,7 +3943,9 @@ static void release_current_context(void) {
     // The context can be set internally by functions that manipulate a texture 
     // but it can only be current for a single thread at a time, and a thread can only have a single context current at a time.
     // Therefore, when moving a context between threads, you must make it non-current on the old thread before making it current on the new one.
-    if (strspn(renderer_info.name, "opengl") != 0) {
+  ////  if (strspn(renderer_info.name, "opengl") != 0) 
+    if(SDL_WINDOW_OPENGL & SDL_GetWindowFlags(window))
+    {
         SDL_GL_MakeCurrent(window, NULL);
     }
 }
@@ -4057,9 +4066,10 @@ void vp_terminate()
     do_exit(NULL);
 }
 
-vp_handle_t vp_open(const char *url, int is_paused, int is_auto_resize, int is_overlay, int is_low_latency, char *img_mime_type, char *alfa_mime_type)
+vp_handle_t vp_open(const char *url, int is_paused, int is_auto_resize, int is_overlay, int is_low_latency, char *img_mime_type, char *alpha_mime_type)
 {
     VideoState *is;
+    int rc;
      
     if(url == NULL)
     {
@@ -4100,11 +4110,45 @@ vp_handle_t vp_open(const char *url, int is_paused, int is_auto_resize, int is_o
         }
 
         img_frame = av_frame_alloc();
+
         if (img_frame == NULL)
         {
             av_log(NULL, AV_LOG_FATAL, "Cannot allocate img frame \n");
             do_exit(NULL);
         }
+
+        if(strcmp("image/jpeg",img_mime_type) == 0)  //(img_mime_type == "image/jpeg")
+        {
+            img_codec_id = AV_CODEC_ID_MJPEG; 
+            img_input_pix_fmt = AV_PIX_FMT_YUV420P;
+        }
+        else if(strcmp("image/png",img_mime_type) == 0)  //(img_mime_type == "image/png")
+        {
+            img_codec_id = AV_CODEC_ID_PNG;
+            img_input_pix_fmt = AV_PIX_FMT_BGR32;
+        }
+        else
+        {
+            av_log(NULL, AV_LOG_FATAL, "Cannot decode image \n");
+            do_exit(NULL);
+        } 
+
+        if(alpha_mime_type != NULL)
+        {
+            if(strcmp("image/jpeg",alpha_mime_type) == 0)  //(alfa_mime_type == "image/jpeg")
+            {
+                alpha_codec_id = AV_CODEC_ID_MJPEG;
+                alpha_input_pix_fmt = AV_PIX_FMT_YUV420P;
+            }
+            else if(strcmp("image/png",alpha_mime_type) == 0)  // (alfa_mime_type == "image/png")
+            {
+                alpha_codec_id = AV_CODEC_ID_PNG;
+                alpha_input_pix_fmt = AV_PIX_FMT_GRAY8;
+;
+            }
+        }
+
+
         video_open(is);
     }
     else
