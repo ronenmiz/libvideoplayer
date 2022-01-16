@@ -582,13 +582,13 @@ finish:
     return 0;
 }
 
-int frame_scale_and_convert(int width, int height, AVFrame *frame, enum AVPixelFormat input_pix_fmt, enum AVPixelFormat img_pix_fmt, uint8_t **rgba_buffer, int *rgba_linesize)
+int frame_scale_and_convert(int width, int height, AVFrame *frame, enum AVPixelFormat img_pix_fmt, uint8_t **rgba_buffer, int *rgba_linesize)
 {
     int rc;
     struct SwsContext *sws_ctx;
 
     /* create scaling context */
-    sws_ctx = sws_getContext(img_frame->width, img_frame->height, input_pix_fmt,
+    sws_ctx = sws_getContext(img_frame->width, img_frame->height, img_frame->format, 
                         //   img_frame->width, img_frame->height, img_pix_fmt,  //***********  for TESTING uncomment this **************
                              width, height, img_pix_fmt,                        //**************** and comment this ********************
                              SWS_BILINEAR, NULL, NULL, NULL);
@@ -619,9 +619,9 @@ int vp_append_img(int x, int y, int width, int height, int img_size, int alpha_s
     int rgba_linesize[4], alpha_linesize[4];
     uint8_t *rgba_buffer[4], *alpha_buffer[4];
     int rc, codec_id, rv = 0;
- //   enum AVPixelFormat input_pix_fmt = AV_PIX_FMT_BGR32; // AV_PIX_FMT_YUV420P;
+
     // AV_PIX_FMT_RGB32 is handled in an endian-specific manner. This is stored as BGRA on little-endian CPU architectures and ARGB on big-endian CPUs.
-    enum AVPixelFormat img_pix_fmt = AV_PIX_FMT_RGB32; // AV_PIX_FMT_BGR32_1;  //  AV_PIX_FMT_RGB32; 
+    enum AVPixelFormat img_pix_fmt = AV_PIX_FMT_RGB32; 
     enum AVPixelFormat alpha_pix_fmt = AV_PIX_FMT_GRAY8;
     
     dest_rectangle.x = x;
@@ -655,7 +655,7 @@ int vp_append_img(int x, int y, int width, int height, int img_size, int alpha_s
                 fprintf(stderr, "Could not allocate destination image\n");
             else
             {
-                rc = frame_scale_and_convert(width, height, img_frame, img_input_pix_fmt, img_pix_fmt,  rgba_buffer, rgba_linesize);
+                rc = frame_scale_and_convert(width, height, img_frame, img_pix_fmt,  rgba_buffer, rgba_linesize);
                 if (rc < 0) 
                     fprintf(stderr, "Could not convert destination image\n");
             }
@@ -685,7 +685,7 @@ int vp_append_img(int x, int y, int width, int height, int img_size, int alpha_s
                    fprintf(stderr, "Could not allocate alpha channel \n");
                 else
                 {
-                    rc = frame_scale_and_convert(width, height, img_frame, alpha_input_pix_fmt, alpha_pix_fmt, alpha_buffer, alpha_linesize);
+                    rc = frame_scale_and_convert(width, height, img_frame, alpha_pix_fmt, alpha_buffer, alpha_linesize);
                     if (rc < 0) 
                         fprintf(stderr, "Could not convert alpha channel \n");
                     else
