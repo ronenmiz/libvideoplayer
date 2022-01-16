@@ -424,11 +424,14 @@ SDL_mutex *streams_mutex = NULL;
 
 // Global variables used by image stream
 static SDL_Texture *img_texture = NULL;
+static SDL_Texture *img_fragment_texture = NULL;
+static SDL_Texture *alpha_fragment_texture = NULL;
 SDL_mutex *img_texture_mutex = NULL;
 static SDL_Rect dest_rectangle;
+static SDL_Rect src_rectangle;
 static AVFrame *img_frame = NULL;
 enum AVPixelFormat img_input_pix_fmt, alpha_input_pix_fmt;
-static volatile int img_is_frame, img_codec_id = AV_CODEC_ID_NONE, alpha_codec_id = AV_CODEC_ID_NONE;
+static int img_is_frame = 0, img_codec_id = AV_CODEC_ID_NONE, alpha_codec_id = AV_CODEC_ID_NONE;
 
 static void release_current_context(void);
 
@@ -586,8 +589,8 @@ int frame_scale_and_convert(int width, int height, AVFrame *frame, enum AVPixelF
 
     /* create scaling context */
     sws_ctx = sws_getContext(img_frame->width, img_frame->height, input_pix_fmt,
-                        //   img_frame->width, img_frame->height, img_pix_fmt,  //***********  TESTING *******************
-                             width, height, img_pix_fmt,
+                        //   img_frame->width, img_frame->height, img_pix_fmt,  //***********  for TESTING uncomment this **************
+                             width, height, img_pix_fmt,                        //**************** and comment this ********************
                              SWS_BILINEAR, NULL, NULL, NULL);
     if (sws_ctx == NULL) 
     {
@@ -610,7 +613,7 @@ int frame_scale_and_convert(int width, int height, AVFrame *frame, enum AVPixelF
 }
 
 
-int vp_append(int x, int y, int width, int height, int img_size, int alpha_size, int is_frame,
+int vp_append_img(int x, int y, int width, int height, int img_size, int alpha_size, int is_frame,
                                 void *img_data, void *alpha_data)
 {
     int rgba_linesize[4], alpha_linesize[4];
@@ -631,19 +634,30 @@ int vp_append(int x, int y, int width, int height, int img_size, int alpha_size,
     rc = get_image_frame(img_codec_id, img_size, img_data, img_frame);
     if (rc == 0)
     {
-        /* buffer is going to be written to raw, no alignment */
-     //   rc = av_image_alloc(rgba_buffer, rgba_linesize, img_frame->width, img_frame->height, img_pix_fmt, 1); //***********  TESTING *******************
-        rc = av_image_alloc(rgba_buffer, rgba_linesize, width, height, img_pix_fmt, 1); 
-        if (rc < 0) 
+        if(img_fragment_texture !=NULL)
         {
-            fprintf(stderr, "Could not allocate destination image\n");
+            src_rectangle.x = 0;
+            src_rectangle.y = 0;
+            src_rectangle.w = img_frame->width;
+            src_rectangle.h = img_frame->height; 
+            rc = SDL_UpdateYUVTexture(img_fragment_texture, &src_rectangle, img_frame->data[0], img_frame->linesize[0],
+                                                                img_frame->data[1], img_frame->linesize[1],
+                                                                img_frame->data[2], img_frame->linesize[2]);
+            if (rc < 0) 
+                fprintf(stderr, "Could not update img_fragment_texture \n");
         }
         else
         {
-            rc = frame_scale_and_convert(width, height, img_frame, img_input_pix_fmt, img_pix_fmt,  rgba_buffer, rgba_linesize);
+        /* buffer is going to be written to raw, no alignment */
+     //   rc = av_image_alloc(rgba_buffer, rgba_linesize, img_frame->width, img_frame->height, img_pix_fmt, 1); //***********  for TESTING uncomment this **************
+            rc = av_image_alloc(rgba_buffer, rgba_linesize, width, height, img_pix_fmt, 1);                     //**************** and comment this ********************
             if (rc < 0) 
+                fprintf(stderr, "Could not allocate destination image\n");
+            else
             {
-                fprintf(stderr, "Could not convert destination image\n");
+                rc = frame_scale_and_convert(width, height, img_frame, img_input_pix_fmt, img_pix_fmt,  rgba_buffer, rgba_linesize);
+                if (rc < 0) 
+                    fprintf(stderr, "Could not convert destination image\n");
             }
         }
         av_frame_unref(img_frame);     
@@ -658,54 +672,91 @@ int vp_append(int x, int y, int width, int height, int img_size, int alpha_size,
         rc = get_image_frame(alpha_codec_id, alpha_size, alpha_data, img_frame);
         if (rc == 0)
         {
-            rc = av_image_alloc(alpha_buffer, alpha_linesize, width, height, alpha_pix_fmt, 4); 
-            if (rc < 0) 
+            if(img_fragment_texture !=NULL)
             {
-                fprintf(stderr, "Could not allocate alpha channel \n");
+                rc = SDL_UpdateTexture(alpha_fragment_texture, &src_rectangle, img_frame->data[0], img_frame->linesize[0]);
+                if (rc < 0) 
+                   fprintf(stderr, "Could not update alpha_fragment_texture \n");
             }
             else
             {
-                rc = frame_scale_and_convert(width, height, img_frame, alpha_input_pix_fmt, alpha_pix_fmt, alpha_buffer, alpha_linesize);
+                rc = av_image_alloc(alpha_buffer, alpha_linesize, width, height, alpha_pix_fmt, 4); 
                 if (rc < 0) 
-                {
-                    fprintf(stderr, "Could not convert alpha channel \n");
-                }
+                   fprintf(stderr, "Could not allocate alpha channel \n");
                 else
                 {
-                    // Copy alpha channel to image
-                    int x, y, dst_line_size = rgba_linesize[0], src_line_size = alpha_linesize[0];
-                    uint8_t *dst, *src;
-
-                    dst = rgba_buffer[0];
-                    src = alpha_buffer[0];
-                    for (y = 0; y < height; y++)
+                    rc = frame_scale_and_convert(width, height, img_frame, alpha_input_pix_fmt, alpha_pix_fmt, alpha_buffer, alpha_linesize);
+                    if (rc < 0) 
+                        fprintf(stderr, "Could not convert alpha channel \n");
+                    else
                     {
-                        for (int x=0; x < width; x++) 
-                            dst[(x<<2)+3] = src[x];
-                       dst += dst_line_size;
-                        src += src_line_size;
+                        // Copy alpha channel to image
+                        int x, y, dst_line_size = rgba_linesize[0], src_line_size = alpha_linesize[0];
+                        uint8_t *dst, *src;
+
+                        dst = rgba_buffer[0];
+                        src = alpha_buffer[0];
+                        for (y = 0; y < height; y++)
+                        {
+                            for (int x=0; x < width; x++) 
+                                dst[(x<<2)+3] = src[x];
+                            dst += dst_line_size;
+                            src += src_line_size;
+                        }
                     }
-                }
-                av_freep(&alpha_buffer[0]);
-            } 
-            av_frame_unref(img_frame);     
+                    av_freep(&alpha_buffer[0]);
+                } 
+            }      
         }
+        av_frame_unref(img_frame); 
         if (rc < 0)
             return rc;
     }
+    if(img_fragment_texture !=NULL) 
+    {
+        rc = SDL_SetRenderTarget(renderer, alpha_fragment_texture);
+        if (rc < 0)
+            fprintf(stderr, "Could not set alpha_fragment_texture as a target \n");
+        else
+        {
+            rc = SDL_RenderCopy(renderer, img_fragment_texture, &src_rectangle, &src_rectangle);
+            if (rc < 0)
+                fprintf(stderr, "Could not add alpha fragment to image fragment \n");
+            else
+            {  
+                rc = SDL_SetRenderTarget(renderer, img_texture);
+                if (rc < 0)
+                    fprintf(stderr, "Could not set img_texture as a target \n");
+                else
+                {
+                    SDL_LockMutex(img_texture_mutex);
+                    rc = SDL_RenderCopy(renderer, alpha_fragment_texture, &src_rectangle, &dest_rectangle);
+                    if (rc < 0)
+                        fprintf(stderr, "Could not add fragment to image \n");
+                    release_current_context();
+                    SDL_UnlockMutex(img_texture_mutex);    
+                }
+            }
+            rc = SDL_SetRenderTarget(renderer, NULL);
+            if (rc < 0)
+                fprintf(stderr, "Could not restore the render \n");
+        }
 
-    SDL_LockMutex(img_texture_mutex);
-    rc = SDL_UpdateTexture(img_texture, &dest_rectangle, rgba_buffer[0], rgba_linesize[0]);
-    if(rc != 0)
-    {  
-        fprintf(stderr, "after SDL_UpdateTexture : %d\n", rc);
-        fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
     }
-    release_current_context();
-    SDL_UnlockMutex(img_texture_mutex);
+    else
+    {
+        SDL_LockMutex(img_texture_mutex);
+        rc = SDL_UpdateTexture(img_texture, &dest_rectangle, rgba_buffer[0], rgba_linesize[0]);
+        if(rc != 0)
+        {  
+            fprintf(stderr, "after SDL_UpdateTexture : %d\n", rc);
+            fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
+        }
+        release_current_context();
+        SDL_UnlockMutex(img_texture_mutex);
 
-    av_freep(&rgba_buffer[0]);       
-
+        av_freep(&rgba_buffer[0]);       
+    }
     img_is_frame = is_frame;
 
     return rc;
@@ -4066,7 +4117,29 @@ void vp_terminate()
     do_exit(NULL);
 }
 
-vp_handle_t vp_open(const char *url, int is_paused, int is_auto_resize, int is_overlay, int is_low_latency, char *img_mime_type, char *alpha_mime_type)
+int get_codec_and_pix_fmt(char *mime_type, int *codec_id, int *input_pix_fmt)
+{
+    if(strcmp("image/jpeg",mime_type) == 0)  //(img_mime_type == "image/jpeg")
+    {
+        *codec_id = AV_CODEC_ID_MJPEG; 
+        *input_pix_fmt = AV_PIX_FMT_YUV420P;
+    }
+    else if(strcmp("image/png",mime_type) == 0)  //(img_mime_type == "image/png")
+    {
+        *codec_id = AV_CODEC_ID_PNG;
+        *input_pix_fmt = AV_PIX_FMT_BGR32;
+    }
+    else if(strcmp("image/png32",mime_type) == 0)
+    {
+        *codec_id = AV_CODEC_ID_PNG;
+        return 1;
+    }
+    else
+        return -1;
+    return 0;
+}
+
+vp_handle_t vp_open(const char *url, char *img_mime_type, char *alpha_mime_type, int is_paused, int is_auto_resize, int is_overlay, int is_low_latency)
 {
     VideoState *is;
     int rc;
@@ -4096,19 +4169,6 @@ vp_handle_t vp_open(const char *url, int is_paused, int is_auto_resize, int is_o
 
     if(is->filename == NULL)
     {           
-        img_texture = SDL_CreateTexture(renderer,  SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, default_width, default_height);
-        if(img_texture == NULL)
-        {  
-            fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
-            av_log(NULL, AV_LOG_FATAL, "Failed to create texture \n");
-            do_exit(NULL);
-        }  
-
-        if (SDL_SetTextureBlendMode(img_texture, SDL_BLENDMODE_BLEND) < 0)
-        {
-            av_log(NULL, AV_LOG_FATAL, "Cannot switch img_texture to blend mode \n");
-        }
-
         img_frame = av_frame_alloc();
 
         if (img_frame == NULL)
@@ -4117,17 +4177,8 @@ vp_handle_t vp_open(const char *url, int is_paused, int is_auto_resize, int is_o
             do_exit(NULL);
         }
 
-        if(strcmp("image/jpeg",img_mime_type) == 0)  //(img_mime_type == "image/jpeg")
-        {
-            img_codec_id = AV_CODEC_ID_MJPEG; 
-            img_input_pix_fmt = AV_PIX_FMT_YUV420P;
-        }
-        else if(strcmp("image/png",img_mime_type) == 0)  //(img_mime_type == "image/png")
-        {
-            img_codec_id = AV_CODEC_ID_PNG;
-            img_input_pix_fmt = AV_PIX_FMT_BGR32;
-        }
-        else
+        rc = get_codec_and_pix_fmt(img_mime_type, &img_codec_id, &img_input_pix_fmt);
+        if(rc < 0)
         {
             av_log(NULL, AV_LOG_FATAL, "Cannot decode image \n");
             do_exit(NULL);
@@ -4135,19 +4186,52 @@ vp_handle_t vp_open(const char *url, int is_paused, int is_auto_resize, int is_o
 
         if(alpha_mime_type != NULL)
         {
-            if(strcmp("image/jpeg",alpha_mime_type) == 0)  //(alfa_mime_type == "image/jpeg")
+            rc = get_codec_and_pix_fmt(alpha_mime_type, &alpha_codec_id, &alpha_input_pix_fmt);
+            if (rc == 1)
             {
-                alpha_codec_id = AV_CODEC_ID_MJPEG;
-                alpha_input_pix_fmt = AV_PIX_FMT_YUV420P;
-            }
-            else if(strcmp("image/png",alpha_mime_type) == 0)  // (alfa_mime_type == "image/png")
-            {
-                alpha_codec_id = AV_CODEC_ID_PNG;
-                alpha_input_pix_fmt = AV_PIX_FMT_GRAY8;
-;
+                img_fragment_texture = SDL_CreateTexture(renderer,  SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STATIC, default_width, default_height);
+                if(img_fragment_texture == NULL)
+                {  
+                    fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
+                    av_log(NULL, AV_LOG_FATAL, "Failed to create img_fragment_texture \n");
+                    do_exit(NULL);
+                }  
+
+                if (SDL_SetTextureBlendMode(img_fragment_texture, SDL_BLENDMODE_ADD) < 0)
+                    av_log(NULL, AV_LOG_FATAL, "Cannot switch img_fragment_texture to blend mode \n");
+
+                alpha_fragment_texture = SDL_CreateTexture(renderer,  SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, default_width, default_height);
+                if(alpha_fragment_texture == NULL)
+                {  
+                    fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
+                    av_log(NULL, AV_LOG_FATAL, "Failed to create alpha_fragment_texture \n");
+                    do_exit(NULL);
+                }  
+
+                if (SDL_SetTextureBlendMode(alpha_fragment_texture, SDL_BLENDMODE_NONE) < 0)
+                    av_log(NULL, AV_LOG_FATAL, "Cannot switch alpha_fragment_texture to blend mode \n"); 
+
+                img_texture = SDL_CreateTexture(renderer,  SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, default_width, default_height);
+                if(img_texture == NULL)
+                {  
+                    fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
+                    av_log(NULL, AV_LOG_FATAL, "Failed to create texture \n");
+                    do_exit(NULL);
+                }     
             }
         }
-
+        if(img_texture == NULL)
+        {
+           img_texture = SDL_CreateTexture(renderer,  SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, default_width, default_height);     
+            if(img_texture == NULL)
+            {  
+                fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
+                av_log(NULL, AV_LOG_FATAL, "Failed to create texture \n");
+                do_exit(NULL);
+            }  
+        }
+        if (SDL_SetTextureBlendMode(img_texture, SDL_BLENDMODE_BLEND) < 0)
+            av_log(NULL, AV_LOG_FATAL, "Cannot switch img_texture to blend mode \n"); 
 
         video_open(is);
     }
@@ -4155,10 +4239,8 @@ vp_handle_t vp_open(const char *url, int is_paused, int is_auto_resize, int is_o
     {
         if ((is_paused && !is->paused) || (!is_paused && is->paused))
             stream_toggle_pause(is);
-
         add_stream(is);
     }
-
     release_current_context();
  
     return is;
