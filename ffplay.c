@@ -431,7 +431,6 @@ static SDL_Rect src_rectangle;
 static SDL_mutex *img_texture_mutex = NULL;
 static AVFrame *img_frame = NULL;
 static AVFrame *alpha_frame = NULL;
-
 static int img_codec_id = AV_CODEC_ID_NONE;
 static int alpha_codec_id = AV_CODEC_ID_NONE;
 static int img_is_frame = 0;
@@ -734,7 +733,6 @@ int img_texture_upload_hw(int x, int y, int width, int height, int img_size, int
         if (rc < 0)
         {
             fprintf(stderr, "Could not decode alpha\n");
-            return rc;
         }
         else
         {
@@ -771,13 +769,12 @@ int img_texture_upload_hw(int x, int y, int width, int height, int img_size, int
                         release_current_context();
                         SDL_UnlockMutex(img_texture_mutex);
                     }
-                    rc = SDL_SetRenderTarget(renderer, NULL);  // target = window
-                    if (rc < 0)
+                    if (SDL_SetRenderTarget(renderer, NULL) < 0)    // target = window
                         fprintf(stderr, "Could not restore the render \n");
-                }   
+                }
             }
             av_frame_unref(img_frame); 
-        }    
+        }
     }
     return rc;
 }
@@ -4144,7 +4141,6 @@ static void release_current_context(void) {
     // The context can be set internally by functions that manipulate a texture 
     // but it can only be current for a single thread at a time, and a thread can only have a single context current at a time.
     // Therefore, when moving a context between threads, you must make it non-current on the old thread before making it current on the new one.
-  ////  if (strspn(renderer_info.name, "opengl") != 0) 
     if(SDL_WINDOW_OPENGL & SDL_GetWindowFlags(window))
     {
         SDL_GL_MakeCurrent(window, NULL);
@@ -4267,7 +4263,7 @@ void vp_terminate()
     do_exit(NULL);
 }
 
-int get_codec(char *mime_type, int *codec_id)
+int get_codec_by_mime(char *mime_type, int *codec_id)
 {
     if(strcmp("image/jpeg",mime_type) == 0) 
         *codec_id = AV_CODEC_ID_MJPEG; 
@@ -4315,7 +4311,7 @@ vp_handle_t vp_open(const char *url, char *img_mime_type, char *alpha_mime_type,
             do_exit(NULL);
         }
         
-        rc = get_codec(img_mime_type, &img_codec_id);
+        rc = get_codec_by_mime(img_mime_type, &img_codec_id);
         if(rc < 0)
         {
             av_log(NULL, AV_LOG_FATAL, "Cannot decode image \n");
@@ -4323,12 +4319,14 @@ vp_handle_t vp_open(const char *url, char *img_mime_type, char *alpha_mime_type,
         } 
 
         if(alpha_mime_type != NULL)
-            rc = get_codec(alpha_mime_type, &alpha_codec_id);
-        if(rc < 0)
         {
-            av_log(NULL, AV_LOG_FATAL, "Cannot decode image \n");
-            do_exit(NULL);
-        } 
+            rc = get_codec_by_mime(alpha_mime_type, &alpha_codec_id);
+            if(rc < 0)
+            {
+                av_log(NULL, AV_LOG_FATAL, "Cannot decode image \n");
+                do_exit(NULL);
+            } 
+        }
 
         video_open(is);
     }
