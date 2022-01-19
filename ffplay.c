@@ -682,6 +682,7 @@ int img_texture_upload(int x, int y, int width, int height, int img_size, int al
                     }
                 }
             } 
+            av_freep(&alpha_buffer[0]);
             av_frame_unref(img_frame);       
         }
         if (rc < 0)
