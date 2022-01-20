@@ -975,10 +975,10 @@ int img_append_init(int img_size, int alpha_size, void *img_data, void *alpha_da
             else 
             if(img_frame->format == AV_PIX_FMT_RGBA)
             {                                               // hw acceleration
-                if(!(renderer_info.flags & SDL_RENDERER_TARGETTEXTURE))
+                if((renderer_info.flags & (SDL_RENDERER_TARGETTEXTURE | SDL_RENDERER_ACCELERATED)) != (SDL_RENDERER_TARGETTEXTURE | SDL_RENDERER_ACCELERATED))
                 {
-                    fprintf(stderr, "Rendering to texture is not supported\n");
-                    av_log(NULL, AV_LOG_FATAL, "Rendering to texture is not supported \n");
+                    fprintf(stderr, "Accelerated rendering to texture is not supported\n");
+                    av_log(NULL, AV_LOG_FATAL, "Accelerated rendering to texture is not supported \n");
                     do_exit(NULL);                    
                 }
                             
