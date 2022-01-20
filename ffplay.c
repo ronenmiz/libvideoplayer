@@ -614,8 +614,8 @@ int frame_scale_and_convert(uint8_t **rgba_buffer, int *rgba_linesize, int width
 
     return rc;    
 }
-
-int img_texture_upload(int x, int y, int width, int height, int img_size, int alpha_size, void *img_data, void *alpha_data)
+// version with scaling using (by?) SDL_UpdateTexture
+int img_texture_upload_v1(int x, int y, int width, int height, int img_size, int alpha_size, void *img_data, void *alpha_data)
 {
     int rgba_linesize[4], alpha_linesize[4];
     uint8_t *rgba_buffer[4], *alpha_buffer[4];
@@ -633,8 +633,10 @@ int img_texture_upload(int x, int y, int width, int height, int img_size, int al
     rc = get_image_frame(img_codec_id, img_size, img_data, img_frame);
     if (rc == 0)
     {
-    //  rc = av_image_alloc(rgba_buffer, rgba_linesize, img_frame->width, img_frame->height, img_pix_fmt, 1); //***********  for TESTING uncomment this **************
-        rc = av_image_alloc(rgba_buffer, rgba_linesize, width, height, img_pix_fmt, 1);                       //**************** and comment this ********************
+        width = img_frame->width;
+        height = img_frame->height;
+  
+        rc = av_image_alloc(rgba_buffer, rgba_linesize, width, height, img_pix_fmt, 1);
         if (rc < 0) 
             fprintf(stderr, "Could not allocate destination image\n");
         else
@@ -656,8 +658,84 @@ int img_texture_upload(int x, int y, int width, int height, int img_size, int al
         rc = get_image_frame(alpha_codec_id, alpha_size, alpha_data, img_frame);
         if (rc == 0)
         {           
-         //       rc = av_image_alloc(alpha_buffer, alpha_linesize, img_frame->width, img_frame->height, alpha_pix_fmt, 4); //***********  for TESTING uncomment this **************
-            rc = av_image_alloc(alpha_buffer, alpha_linesize, width, height, alpha_pix_fmt, 4);                       //**************** and comment this ********************
+            // Copy alpha channel to image
+            int x, y, dst_line_size = rgba_linesize[0], src_line_size = img_frame->linesize[0];
+            uint8_t *dst, *src;
+
+            dst = rgba_buffer[0];
+            src = img_frame->data[0]; 
+            for (y = 0; y < height; y++)
+            {
+                for (int x=0; x < width; x++) 
+                    dst[(x<<2)+3] = src[x];
+                dst += dst_line_size;
+                src += src_line_size;
+            }
+            av_frame_unref(img_frame);       
+        }
+        else
+            return rc;
+    }
+
+    // update img texture
+
+    SDL_LockMutex(img_texture_mutex);
+    rc = SDL_UpdateTexture(img_texture, &dest_rectangle, rgba_buffer[0], rgba_linesize[0]);
+    if(rc != 0)
+    {  
+        fprintf(stderr, "after SDL_UpdateTexture : %d\n", rc);
+        fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
+    }
+    release_current_context();
+    SDL_UnlockMutex(img_texture_mutex);
+
+    av_freep(&rgba_buffer[0]);       
+
+    return rc;
+}
+
+
+int img_texture_upload(int x, int y, int width, int height, int img_size, int alpha_size, void *img_data, void *alpha_data)
+{
+    int rgba_linesize[4], alpha_linesize[4];
+    uint8_t *rgba_buffer[4], *alpha_buffer[4];
+    int rc;
+    enum AVPixelFormat img_pix_fmt = AV_PIX_FMT_RGB32; 
+    enum AVPixelFormat alpha_pix_fmt = AV_PIX_FMT_GRAY8;
+
+    dest_rectangle.x = x;
+    dest_rectangle.y = y;
+    dest_rectangle.w = width;
+    dest_rectangle.h = height;  
+
+    // decode image
+ 
+    rc = get_image_frame(img_codec_id, img_size, img_data, img_frame);
+    if (rc == 0)
+    {
+        rc = av_image_alloc(rgba_buffer, rgba_linesize, width, height, img_pix_fmt, 1);
+        if (rc < 0) 
+            fprintf(stderr, "Could not allocate destination image\n");
+        else
+        {
+            rc = frame_scale_and_convert( rgba_buffer, rgba_linesize, width, height, img_pix_fmt,  img_frame);
+            if (rc < 0) 
+                fprintf(stderr, "Could not convert destination image\n");
+        }
+        
+        av_frame_unref(img_frame);     
+    }
+    if (rc < 0)
+        return rc;
+
+    // decode and set alpha
+
+    if(alpha_size != 0)  
+    {
+        rc = get_image_frame(alpha_codec_id, alpha_size, alpha_data, img_frame);
+        if (rc == 0)
+        {           
+            rc = av_image_alloc(alpha_buffer, alpha_linesize, width, height, alpha_pix_fmt, 4);
             if (rc < 0) 
                 fprintf(stderr, "Could not allocate alpha channel \n");
             else
@@ -814,6 +892,13 @@ int img_append_init(int img_size, int alpha_size, void *img_data, void *alpha_da
             else 
             if(img_frame->format == AV_PIX_FMT_RGBA)
             {                                               // hw acceleration
+                if(!(renderer_info.flags & SDL_RENDERER_TARGETTEXTURE))
+                {
+                    fprintf(stderr, "Rendering to texture is not supported\n");
+                    av_log(NULL, AV_LOG_FATAL, "Rendering to texture is not supported \n");
+                    do_exit(NULL);                    
+                }
+                            
                 img_fragment_texture = SDL_CreateTexture(renderer,  SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STATIC, default_width, default_height);
                 if(img_fragment_texture == NULL)
                 {  
