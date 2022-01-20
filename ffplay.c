@@ -770,7 +770,7 @@ int img_texture_upload(int x, int y, int width, int height, int img_size, int al
 
     // update img texture
 
-    SDL_LockMutex(img_texture_mutex);
+    SDL_LockMutex(img_stream_mutex);
     rc = SDL_UpdateTexture(img_texture, &dest_rectangle, rgba_buffer[0], rgba_linesize[0]);
     if(rc != 0)
     {  
@@ -778,7 +778,7 @@ int img_texture_upload(int x, int y, int width, int height, int img_size, int al
         fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
     }
     release_current_context();
-    SDL_UnlockMutex(img_texture_mutex);
+    SDL_UnlockMutex(img_stream_mutex);
 
     av_freep(&rgba_buffer[0]);       
 
