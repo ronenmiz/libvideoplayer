@@ -428,7 +428,7 @@ static SDL_Texture *img_fragment_texture = NULL;
 static SDL_Texture *alpha_fragment_texture = NULL;
 static SDL_Rect dest_rectangle;
 static SDL_Rect src_rectangle;
-static SDL_mutex *img_texture_mutex = NULL;
+static SDL_mutex *img_stream_mutex = NULL;
 static AVFrame *img_frame = NULL;
 static AVFrame *alpha_frame = NULL;
 static int img_codec_id = AV_CODEC_ID_NONE;
@@ -545,14 +545,15 @@ int get_image_frame(int codec_id, int img_size, void *img_data, AVFrame *frame)
     rc = av_read_frame(fmt_ctx, &pkt);
     if (rc < 0)
     {
-        fprintf(stderr, "Error sending a packet for decoding\n");
+        fprintf(stderr, "Error reading a packet\n");
         goto finish;
     }
 
     rc = avcodec_send_packet(c, &pkt);
-    if (rc == 0)
+    if (rc < 0)
     {
-        fprintf(stderr, "after avcodec_send_packet: SUCCESS %d\n", rc);
+        fprintf(stderr, "Error sending a packet for decoding\n");
+        goto finish;
     }
 
     rc = avcodec_receive_frame(c, frame);
@@ -679,7 +680,7 @@ int img_texture_upload_v1(int x, int y, int width, int height, int img_size, int
 
     // update img texture
 
-    SDL_LockMutex(img_texture_mutex);
+    SDL_LockMutex(img_stream_mutex);
     rc = SDL_UpdateTexture(img_texture, &dest_rectangle, rgba_buffer[0], rgba_linesize[0]);
     if(rc != 0)
     {  
@@ -687,7 +688,7 @@ int img_texture_upload_v1(int x, int y, int width, int height, int img_size, int
         fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
     }
     release_current_context();
-    SDL_UnlockMutex(img_texture_mutex);
+    SDL_UnlockMutex(img_stream_mutex);
 
     av_freep(&rgba_buffer[0]);       
 
@@ -800,9 +801,12 @@ int img_texture_upload_hw(int x, int y, int width, int height, int img_size, int
     src_rectangle.w = img_frame->width;
     src_rectangle.h = img_frame->height; 
 
+    SDL_LockMutex(img_stream_mutex);
     rc = SDL_UpdateYUVTexture(img_fragment_texture, &src_rectangle, img_frame->data[0], img_frame->linesize[0],
                                                                 img_frame->data[1], img_frame->linesize[1],
                                                                 img_frame->data[2], img_frame->linesize[2]);
+    release_current_context();
+    SDL_UnlockMutex(img_stream_mutex);
     av_frame_unref(img_frame);                                                            
     if (rc < 0) 
         fprintf(stderr, "Could not update img_fragment_texture \n");
@@ -815,12 +819,12 @@ int img_texture_upload_hw(int x, int y, int width, int height, int img_size, int
         }
         else
         {
+            SDL_LockMutex(img_stream_mutex);
             rc = SDL_UpdateTexture(alpha_fragment_texture, &src_rectangle, img_frame->data[0], img_frame->linesize[0]);
             if (rc < 0) 
                 fprintf(stderr, "Could not update alpha_fragment_texture \n");
             else
             {
-             //   SDL_LockMutex(img_texture_mutex);
                 rc = SDL_SetRenderTarget(renderer, alpha_fragment_texture);  // dst(target) texture = alpha_fragment_texture
                 if (rc < 0)
                     fprintf(stderr, "Could not set alpha_fragment_texture as a target \n");
@@ -830,8 +834,7 @@ int img_texture_upload_hw(int x, int y, int width, int height, int img_size, int
                     if (rc < 0)
                         fprintf(stderr, "Could not add alpha fragment to image fragment \n");
                     else
-                    {  
-                        SDL_LockMutex(img_texture_mutex);
+                    {
                         rc = SDL_SetRenderTarget(renderer, img_texture);   // dst(target) texture = img_texture
                         if (rc < 0)
                             fprintf(stderr, "Could not set img_texture as a target \n");
@@ -845,18 +848,98 @@ int img_texture_upload_hw(int x, int y, int width, int height, int img_size, int
                             if (rc < 0)
                             fprintf(stderr, "Could not add fragment to image \n");   
                         }
-                        release_current_context();
-                        SDL_UnlockMutex(img_texture_mutex);
+                        
                     }
                     if (SDL_SetRenderTarget(renderer, NULL) < 0)    // target = window
                         fprintf(stderr, "Could not restore the render \n");
                 }
             }
+            release_current_context();
+            SDL_UnlockMutex(img_stream_mutex);
             av_frame_unref(img_frame); 
         }
     }
     return rc;
 }
+
+// int img_texture_upload_hw(int x, int y, int width, int height, int img_size, int alpha_size, void *img_data, void *alpha_data)
+// {
+//     int rc = 0;
+
+//     rc = get_image_frame(img_codec_id, img_size, img_data, img_frame);
+//     if (rc < 0)
+//     {
+//         fprintf(stderr, "Could not decode image\n");
+//         return rc;
+//     }
+
+//     src_rectangle.x = 0;
+//     src_rectangle.y = 0;
+//     src_rectangle.w = img_frame->width;
+//     src_rectangle.h = img_frame->height; 
+
+//     SDL_LockMutex(img_stream_mutex);
+//     rc = SDL_UpdateYUVTexture(img_fragment_texture, &src_rectangle, img_frame->data[0], img_frame->linesize[0],
+//                                                                 img_frame->data[1], img_frame->linesize[1],
+//                                                                 img_frame->data[2], img_frame->linesize[2]);
+//     release_current_context();
+//     SDL_UnlockMutex(img_stream_mutex);
+//     av_frame_unref(img_frame);                                                            
+//     if (rc < 0) {
+//         fprintf(stderr, "Could not update img_fragment_texture \n");
+//         return rc;
+//     }
+
+//     rc = get_image_frame(alpha_codec_id, alpha_size, alpha_data, img_frame);
+//     if (rc < 0)
+//     {
+//         fprintf(stderr, "Could not decode alpha\n");
+//         return rc;
+//     }
+
+//     SDL_LockMutex(img_stream_mutex);
+//     rc = SDL_UpdateTexture(alpha_fragment_texture, &src_rectangle, img_frame->data[0], img_frame->linesize[0]);
+//     if (rc < 0) {
+//         fprintf(stderr, "Could not update alpha_fragment_texture \n");
+//         goto finish;
+//     }
+
+//     rc = SDL_SetRenderTarget(renderer, alpha_fragment_texture);  // dst(target) texture = alpha_fragment_texture
+//     if (rc < 0) {
+//         fprintf(stderr, "Could not set alpha_fragment_texture as a target \n");
+//         goto finish;
+//     }
+
+//     rc = SDL_RenderCopy(renderer, img_fragment_texture, &src_rectangle, &src_rectangle); //dstA = dstA; dstRGB = (srcRGB * srcA) + dstRGB 
+//     if (rc < 0) {
+//         fprintf(stderr, "Could not add alpha fragment to image fragment \n");
+//         goto finish;
+//     }
+
+//     rc = SDL_SetRenderTarget(renderer, img_texture);   // dst(target) texture = img_texture
+//     if (rc < 0) {
+//         fprintf(stderr, "Could not set img_texture as a target \n");
+//         goto finish;
+//     }
+
+//     dest_rectangle.x = x;
+//     dest_rectangle.y = y;
+//     dest_rectangle.w = width;
+//     dest_rectangle.h = height; 
+//     rc = SDL_RenderCopy(renderer, alpha_fragment_texture, &src_rectangle, &dest_rectangle); // dstRGBA = srcRGBA
+//     if (rc < 0)
+//     fprintf(stderr, "Could not add fragment to image \n");   
+    
+// finish:
+//     if (SDL_SetRenderTarget(renderer, NULL) < 0)    // target = window
+//         fprintf(stderr, "Could not restore the render \n");
+
+//     release_current_context();
+//     SDL_UnlockMutex(img_stream_mutex);
+//     av_frame_unref(img_frame); 
+
+//     return rc;
+// }
 
 int img_append_init(int img_size, int alpha_size, void *img_data, void *alpha_data, int *use_hw_acceleration)
 {
@@ -3947,34 +4030,35 @@ static int refresh_loop_wait_event(SDL_Event *event, size_t event_count) {
                 is_needs_refresh = 1;
                 break;
             }
-        SDL_UnlockMutex(streams_mutex);        
+        SDL_UnlockMutex(streams_mutex);   
 
         // RONEN - Do it once for all so moved out of video_display()
         if (is_needs_refresh || img_is_frame)
         {
             int refreshed = 0;
+            SDL_LockMutex(img_stream_mutex);
 
             SDL_LockMutex(streams_mutex);
             for (i=0; i < stream_count; i++)
                 refreshed = video_refresh(streams[i], &remaining_time) || refreshed;        
+            SDL_UnlockMutex(streams_mutex);
+
             if(img_is_frame)
             {
-                SDL_LockMutex(img_texture_mutex);
                 img_is_frame = 0;
-                SDL_LockMutex(streams_mutex);
                 rc = SDL_RenderCopy(renderer, img_texture, NULL, NULL);
-                SDL_UnlockMutex(streams_mutex);
                 if(rc < 0)
                 {
                     fprintf(stderr, "SDL error: %s\n", SDL_GetError());
                 }
-                release_current_context();
-                SDL_UnlockMutex(img_texture_mutex);
                 refreshed = 1;   
             }
-            SDL_UnlockMutex(streams_mutex);
+            
             if (refreshed)
                 SDL_RenderPresent(renderer);
+
+            release_current_context();
+            SDL_UnlockMutex(img_stream_mutex);
         }
         
         SDL_PumpEvents();
@@ -4329,8 +4413,8 @@ int vp_init(void)
         return AVERROR(ENOMEM);
     }
 
-    img_texture_mutex = SDL_CreateMutex();
-    if (!img_texture_mutex) {
+    img_stream_mutex = SDL_CreateMutex();
+    if (!img_stream_mutex) {
         av_log(NULL, AV_LOG_FATAL, "SDL_CreateMutex(): %s\n", SDL_GetError());
         return AVERROR(ENOMEM);
     }
@@ -4344,8 +4428,8 @@ void vp_terminate()
 {
     if (streams_mutex != NULL)
         SDL_DestroyMutex(streams_mutex);
-    if (img_texture_mutex != NULL)
-        SDL_DestroyMutex(img_texture_mutex);
+    if (img_stream_mutex != NULL)
+        SDL_DestroyMutex(img_stream_mutex);
     do_exit(NULL);
 }
 
