@@ -648,35 +648,34 @@ int img_texture_upload(int x, int y, int width, int height, int img_size, int al
     dest_rectangle.w = width;
     dest_rectangle.h = height;  
 
-    /* Decode image, allocate RGBA buffer to add alpha when presented. */
+    /* Decode image. */
     rc = get_image_frame(img_codec_id, img_size, img_data, img_frame);
-    if (rc == 0)
-    {
-        _width = img_frame->width;
-        _height = img_frame->height;
-  
-        rc = av_image_alloc(rgba_buffer, rgba_linesize, _width, _height, img_pix_fmt, 1);
-        if (rc < 0) 
-            fprintf(stderr, "Could not allocate destination image\n");
-        else
-        {
-            rc = frame_scale_and_convert( _width, _height, img_frame->format, img_frame->data, img_frame->linesize,
-                                          _width, _height, img_pix_fmt, rgba_buffer, rgba_linesize);
-            if (rc < 0) 
-            {
-                av_freep(&rgba_buffer[0]);
-                fprintf(stderr, "Could not convert destination image\n");
-            }
-        }
-        av_frame_unref(img_frame);     
-    }
     if (rc < 0)
     {
         fprintf(stderr, "Image processing error\n");   
         return rc;
     }
-        
-    // decode and set alpha
+    _width = img_frame->width;
+    _height = img_frame->height;
+
+    /* Allocate RGBA buffer and convert image to RGBA pixel format, then add alpha if presented. */
+
+    rc = av_image_alloc(rgba_buffer, rgba_linesize, _width, _height, img_pix_fmt, 1);
+    if (rc < 0) 
+    {
+        fprintf(stderr, "Could not allocate destination image\n");   
+        av_frame_unref(img_frame); 
+        return rc;
+    }
+    rc = frame_scale_and_convert( _width, _height, img_frame->format, img_frame->data, img_frame->linesize,
+                                    _width, _height, img_pix_fmt, rgba_buffer, rgba_linesize);
+    av_frame_unref(img_frame); 
+    if (rc < 0) 
+    {
+        fprintf(stderr, "Could not convert destination image\n");
+        av_freep(&rgba_buffer[0]);
+        return rc;
+    }
 
     if(alpha_size != 0)  
     {
@@ -684,28 +683,29 @@ int img_texture_upload(int x, int y, int width, int height, int img_size, int al
         rc = get_image_frame(alpha_codec_id, alpha_size, alpha_data, img_frame);
         if (rc < 0)
         {
-            fprintf(stderr, "Alpha processing error\n"); 
-            return rc;  // а может он и без альфы пусть работает?
+            fprintf(stderr, "Alpha processing error\n");
         }
-         
-        /* Copy alpha channel to RGBA buffer. */
-
-        uint8_t *dst, *src;
-        int x, y, dst_line_size = rgba_linesize[0], src_line_size = img_frame->linesize[0];
-    
-        dst = rgba_buffer[0];
-        src = img_frame->data[0]; 
-        for (y = 0; y < _height; y++)
+        else 
         {
-            for (int x=0; x < _width; x++) 
-                dst[(x<<2)+3] = src[x];
-            dst += dst_line_size;
-            src += src_line_size;
+            /* Copy alpha channel to RGBA buffer. */
+
+            uint8_t *dst, *src;
+            int x, y, dst_line_size = rgba_linesize[0], src_line_size = img_frame->linesize[0];
+        
+            dst = rgba_buffer[0];
+            src = img_frame->data[0]; 
+            for (y = 0; y < _height; y++)
+            {
+                for (int x=0; x < _width; x++) 
+                    dst[(x<<2)+3] = src[x];
+                dst += dst_line_size;
+                src += src_line_size;
+            }
+            av_frame_unref(img_frame); 
         }
-        av_frame_unref(img_frame);        
     }
 
-    // scale image with restored alpha
+    /* Scale image with restored alpha. */
 
     rc = av_image_alloc(rgba_scaled_buffer, rgba_scaled_linesize, width, height, img_pix_fmt, 1);
     if (rc < 0) 
@@ -713,8 +713,7 @@ int img_texture_upload(int x, int y, int width, int height, int img_size, int al
     else
     {
         rc = frame_scale_and_convert( _width, _height, img_pix_fmt, rgba_buffer, rgba_linesize,
-                                        width, height, img_pix_fmt, rgba_scaled_buffer, rgba_scaled_linesize);
-                                         
+                                        width, height, img_pix_fmt, rgba_scaled_buffer, rgba_scaled_linesize);                        
         if (rc < 0)
         {
             av_freep(&rgba_scaled_buffer[0]);
@@ -728,7 +727,7 @@ int img_texture_upload(int x, int y, int width, int height, int img_size, int al
         return rc;
     }
 
-    // update img texture
+    /* Update img texture. */
 
     SDL_LockMutex(img_stream_mutex);
     rc = SDL_UpdateTexture(img_texture, &dest_rectangle, rgba_scaled_buffer[0], rgba_scaled_linesize[0]);
