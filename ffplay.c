@@ -422,15 +422,29 @@ SDL_mutex *streams_mutex = NULL;
 
 #define MAX_STREAMS (sizeof(streams)/sizeof(streams[0]))
 
-// Global variables used by image stream
-static SDL_Texture *img_texture = NULL;
+
+/* Global variables used by image stream.
+ * img_texture is used to gather all the images, provided through vp_append_img, 
+ *      and comprising a single frame to be made visible simultaneously.
+ * img_fragment_texture, alpha_fragment_texture are used in addition to img_texture 
+ *      only in the mode when alpha blending performed by SDL with turned on hardware acceleration if possible. 
+ * src_rectangle, dest_rectangle represent the image frame rectangle area to be updated, before and after scaling respectivly.
+ * img_stream_mutex is used to solve 2 problems: 
+ *  -   in multithreading application avoid simultaneous access to resources connected to current GL context when renderer type is opengl|opengle;
+ *  -   avoid simultaneous access to resources used by both video and image stream. 
+ * img_frame is used to store decoded image (image itself or alpha image) when receiving image as a bitstream. 
+ *      After the appropriate texture updated, img_frame can be cleared and used for the next decoding. 
+ * img_codec_id, alpha_codec_id are used to store codec id 
+ *      after it is detected when appending data of the first image and its alpha (if presented).
+ * img_is_frame is a flag indicating whether img_texture currently contains a complete image frame.
+ */
+static SDL_Texture *img_texture = NULL;  
 static SDL_Texture *img_fragment_texture = NULL;
 static SDL_Texture *alpha_fragment_texture = NULL;
-static SDL_Rect dest_rectangle;
 static SDL_Rect src_rectangle;
+static SDL_Rect dest_rectangle;
 static SDL_mutex *img_stream_mutex = NULL;
 static AVFrame *img_frame = NULL;
-static AVFrame *alpha_frame = NULL;
 static int img_codec_id = AV_CODEC_ID_NONE;
 static int alpha_codec_id = AV_CODEC_ID_NONE;
 static int img_is_frame = 0;
@@ -615,7 +629,7 @@ int frame_scale_and_convert(uint8_t **rgba_buffer, int *rgba_linesize, int width
 
     return rc;    
 }
-// version with scaling using (by?) SDL_UpdateTexture
+
 int img_texture_upload_v1(int x, int y, int width, int height, int img_size, int alpha_size, void *img_data, void *alpha_data)
 {
     int rgba_linesize[4], alpha_linesize[4];
@@ -629,8 +643,7 @@ int img_texture_upload_v1(int x, int y, int width, int height, int img_size, int
     dest_rectangle.w = width;
     dest_rectangle.h = height;  
 
-    // decode image
- 
+    /* Decode image, allocate RGBA buffer to add alpha when presented. */
     rc = get_image_frame(img_codec_id, img_size, img_data, img_frame);
     if (rc == 0)
     {
@@ -652,14 +665,13 @@ int img_texture_upload_v1(int x, int y, int width, int height, int img_size, int
     if (rc < 0)
         return rc;
 
-    // decode and set alpha
-
     if(alpha_size != 0)  
     {
+        /* Decode alpha image. */
         rc = get_image_frame(alpha_codec_id, alpha_size, alpha_data, img_frame);
         if (rc == 0)
         {           
-            // Copy alpha channel to image
+            /* Copy alpha channel to RGBA buffer. */
             int x, y, dst_line_size = rgba_linesize[0], src_line_size = img_frame->linesize[0];
             uint8_t *dst, *src;
 
@@ -678,7 +690,7 @@ int img_texture_upload_v1(int x, int y, int width, int height, int img_size, int
             return rc;
     }
 
-    // update img texture
+    /* Update img_texture. */
 
     SDL_LockMutex(img_stream_mutex);
     rc = SDL_UpdateTexture(img_texture, &dest_rectangle, rgba_buffer[0], rgba_linesize[0]);
@@ -862,110 +874,42 @@ int img_texture_upload_hw(int x, int y, int width, int height, int img_size, int
     return rc;
 }
 
-// int img_texture_upload_hw(int x, int y, int width, int height, int img_size, int alpha_size, void *img_data, void *alpha_data)
-// {
-//     int rc = 0;
-
-//     rc = get_image_frame(img_codec_id, img_size, img_data, img_frame);
-//     if (rc < 0)
-//     {
-//         fprintf(stderr, "Could not decode image\n");
-//         return rc;
-//     }
-
-//     src_rectangle.x = 0;
-//     src_rectangle.y = 0;
-//     src_rectangle.w = img_frame->width;
-//     src_rectangle.h = img_frame->height; 
-
-//     SDL_LockMutex(img_stream_mutex);
-//     rc = SDL_UpdateYUVTexture(img_fragment_texture, &src_rectangle, img_frame->data[0], img_frame->linesize[0],
-//                                                                 img_frame->data[1], img_frame->linesize[1],
-//                                                                 img_frame->data[2], img_frame->linesize[2]);
-//     release_current_context();
-//     SDL_UnlockMutex(img_stream_mutex);
-//     av_frame_unref(img_frame);                                                            
-//     if (rc < 0) {
-//         fprintf(stderr, "Could not update img_fragment_texture \n");
-//         return rc;
-//     }
-
-//     rc = get_image_frame(alpha_codec_id, alpha_size, alpha_data, img_frame);
-//     if (rc < 0)
-//     {
-//         fprintf(stderr, "Could not decode alpha\n");
-//         return rc;
-//     }
-
-//     SDL_LockMutex(img_stream_mutex);
-//     rc = SDL_UpdateTexture(alpha_fragment_texture, &src_rectangle, img_frame->data[0], img_frame->linesize[0]);
-//     if (rc < 0) {
-//         fprintf(stderr, "Could not update alpha_fragment_texture \n");
-//         goto finish;
-//     }
-
-//     rc = SDL_SetRenderTarget(renderer, alpha_fragment_texture);  // dst(target) texture = alpha_fragment_texture
-//     if (rc < 0) {
-//         fprintf(stderr, "Could not set alpha_fragment_texture as a target \n");
-//         goto finish;
-//     }
-
-//     rc = SDL_RenderCopy(renderer, img_fragment_texture, &src_rectangle, &src_rectangle); //dstA = dstA; dstRGB = (srcRGB * srcA) + dstRGB 
-//     if (rc < 0) {
-//         fprintf(stderr, "Could not add alpha fragment to image fragment \n");
-//         goto finish;
-//     }
-
-//     rc = SDL_SetRenderTarget(renderer, img_texture);   // dst(target) texture = img_texture
-//     if (rc < 0) {
-//         fprintf(stderr, "Could not set img_texture as a target \n");
-//         goto finish;
-//     }
-
-//     dest_rectangle.x = x;
-//     dest_rectangle.y = y;
-//     dest_rectangle.w = width;
-//     dest_rectangle.h = height; 
-//     rc = SDL_RenderCopy(renderer, alpha_fragment_texture, &src_rectangle, &dest_rectangle); // dstRGBA = srcRGBA
-//     if (rc < 0)
-//     fprintf(stderr, "Could not add fragment to image \n");   
-    
-// finish:
-//     if (SDL_SetRenderTarget(renderer, NULL) < 0)    // target = window
-//         fprintf(stderr, "Could not restore the render \n");
-
-//     release_current_context();
-//     SDL_UnlockMutex(img_stream_mutex);
-//     av_frame_unref(img_frame); 
-
-//     return rc;
-// }
-
 int img_append_init(int img_size, int alpha_size, void *img_data, void *alpha_data, int *use_hw_acceleration)
 {
     int rc, img_blend_mode, img_texture_access;
 
+    /* Decode image frame to detect actual pixel format. */
     rc = get_image_frame(img_codec_id, img_size, img_data, img_frame);
     if (rc < 0)
     {
         fprintf(stderr, "Could not decode image\n");
         return rc;
     }
-    if(img_frame->format  == AV_PIX_FMT_RGBA) // img = png
+    if(img_frame->format  == AV_PIX_FMT_RGBA)
     {
+        /* According to detected format the image contains the alpha channel (typically this is PNG image).
+         * Separate alpha image is not considered.
+         */
         img_blend_mode = SDL_BLENDMODE_BLEND;
-        img_texture_access = SDL_TEXTUREACCESS_STREAMING;   // or SDL_TEXTUREACCESS_TARGET ?
+        img_texture_access = SDL_TEXTUREACCESS_STREAMING;
     }
-    else      // img = jpeg
+    else 
     {
+        /* The image itself doesn't contain the alpha channel.  
+         * Typically this is JPEG image, we assume the pixel format SDL_PIXELFORMAT_IYUV.
+         */
+
+        /* Clear img_frame to be ready for alpha image decoding. */
         av_frame_unref(img_frame); 
-        if (alpha_size == 0)     // jpeg without alpha channel
+
+        if (alpha_size == 0) /* No alpha */
         {                         
             img_blend_mode = SDL_BLENDMODE_NONE;
-            img_texture_access = SDL_TEXTUREACCESS_STREAMING;  // or SDL_TEXTUREACCESS_TARGET + SDL_PIXELFORMAT_IYUV ?
+            img_texture_access = SDL_TEXTUREACCESS_STREAMING;
         }
-        else       // img = jpeg + alpha
+        else 
         {    
+            /* Decode alpha image frame to detect actual pixel format. */
             rc = get_image_frame(alpha_codec_id, alpha_size, alpha_data, img_frame);
             if (rc < 0)
             {
@@ -974,15 +918,17 @@ int img_append_init(int img_size, int alpha_size, void *img_data, void *alpha_da
             }
             else 
             if(img_frame->format == AV_PIX_FMT_RGBA)
-            {                                               // hw acceleration
+            {        
+                /* Alpha image has a pixel format with alpha channel. 
+                 * Delegate alpha blending to SDL (if possible) to be able to use hardware acceleration.
+                 */
                 if(!(renderer_info.flags & SDL_RENDERER_TARGETTEXTURE))
                 {
-                    fprintf(stderr, "Rendering to texture is not supported\n");
-                    av_log(NULL, AV_LOG_FATAL, "Rendering to texture is not supported \n");
-                    do_exit(NULL);                    
+                    fprintf(stderr, "Unable to use hardware acceleration (rendering to texture is not supported).\n");
+                    av_log(NULL, AV_LOG_FATAL, "Unable to use hardware acceleration (rendering to texture is not supported).\n");                 
                 }
                             
-                img_fragment_texture = SDL_CreateTexture(renderer,  SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STATIC, default_width, default_height);
+                img_fragment_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STATIC, default_width, default_height);
                 if(img_fragment_texture == NULL)
                 {  
                     fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
@@ -997,7 +943,7 @@ int img_append_init(int img_size, int alpha_size, void *img_data, void *alpha_da
                     do_exit(NULL);
                 }
 
-                alpha_fragment_texture = SDL_CreateTexture(renderer,  SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, default_width, default_height);
+                alpha_fragment_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, default_width, default_height);
                 if(alpha_fragment_texture == NULL)
                 {  
                     fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
@@ -1015,8 +961,9 @@ int img_append_init(int img_size, int alpha_size, void *img_data, void *alpha_da
                 img_texture_access = SDL_TEXTUREACCESS_TARGET; 
                 *use_hw_acceleration  = 1;
             }
-            else // programm alpha setting
+            else 
             {
+                /* Alpha channel is coming as a separate image, we will append it to image texture programmatically. */
                 img_blend_mode = SDL_BLENDMODE_BLEND;
                 img_texture_access = SDL_TEXTUREACCESS_STREAMING; 
             }
@@ -1025,7 +972,7 @@ int img_append_init(int img_size, int alpha_size, void *img_data, void *alpha_da
     }
     av_frame_unref(img_frame);
 
-    img_texture = SDL_CreateTexture(renderer,  SDL_PIXELFORMAT_ARGB8888, img_texture_access /* SDL_TEXTUREACCESS_STREAMING / SDL_TEXTUREACCESS_STATIC */, default_width, default_height);     
+    img_texture = SDL_CreateTexture(renderer,  SDL_PIXELFORMAT_ARGB8888, img_texture_access, default_width, default_height);     
     if(img_texture == NULL)
     {  
         fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
@@ -1043,10 +990,17 @@ int img_append_init(int img_size, int alpha_size, void *img_data, void *alpha_da
     return 0;
 }
     
+/* vp_append_img stands to serve the image stream by appending sequentially the image data buffer
+ * when the video player opened with empty url. It is safe to work in multithreding context.
+ */
 int vp_append_img(int x, int y, int width, int height, int img_size, int alpha_size, int is_frame,
                                 void *img_data, void *alpha_data)
 {
+    /* When the first image is coming we check an actual image format to make decision about an operation mode 
+     * for the current image stream and prepare resources accordingly (create textures, set blend mode, etc.)
+     */
     static int need_init = 1;
+    /* When alpha image has RGBA pixel format (PNG32) we will delegate alpha blending to SDL and turn on hardware acceleration (if available). */
     static int use_hw_acceleration = 0;
 
     int rc;
@@ -1058,6 +1012,9 @@ int vp_append_img(int x, int y, int width, int height, int img_size, int alpha_s
             need_init = 0;
     }
 
+    /* Update img_texture with comming image data to be displayed when image frame is complete 
+    * (performs image decoding, scaling and alpha blending). 
+    */
     if(use_hw_acceleration) 
     {
         rc = img_texture_upload_hw(x, y, width, height, img_size, alpha_size, img_data, alpha_data);
