@@ -482,7 +482,12 @@ int get_image_frame(int codec_id, int img_size, void *img_data, AVFrame *frame)
     if(codec_id == AV_CODEC_ID_MJPEG)
       inp_format = "mjpeg";
     else if(codec_id == AV_CODEC_ID_PNG)
-      inp_format = "png_pipe";  
+      inp_format = "png_pipe"; 
+    else 
+    {
+        av_log(NULL, AV_LOG_FATAL, "Invalid codec ID\n");
+        goto finish; 
+    }   
 
     AVInputFormat *input_format = av_find_input_format(inp_format);
     if (input_format == NULL)
@@ -585,16 +590,17 @@ finish:
 
     return 0;
 }
-                         
-int frame_scale_and_convert(uint8_t **rgba_buffer, int *rgba_linesize, int width, int height, enum AVPixelFormat img_pix_fmt, AVFrame *frame)
+
+int frame_scale_and_convert(int srcW, int srcH, enum AVPixelFormat srcFormat, uint8_t *const *src_data, const int *src_linesize,     
+                           int dstW, int dstH, enum AVPixelFormat dstFormat,  uint8_t *const *dst_data, const int *dst_linesize)                    
 {
     int rc;
     struct SwsContext *sws_ctx;
 
     /* create scaling context */
-    sws_ctx = sws_getContext(img_frame->width, img_frame->height, img_frame->format, 
-                        //    img_frame->width, img_frame->height, img_pix_fmt,  //***********  for TESTING uncomment this **************
-                            width, height, img_pix_fmt,                        //**************** and comment this ********************
+
+    sws_ctx = sws_getContext(srcW, srcH, srcFormat, 
+                             dstW, dstH, dstFormat,                       
                              SWS_BILINEAR, NULL, NULL, NULL);
     if (sws_ctx == NULL) 
     {
@@ -603,9 +609,9 @@ int frame_scale_and_convert(uint8_t **rgba_buffer, int *rgba_linesize, int width
     }
 
     /* convert to destination format */
-    rc = sws_scale(sws_ctx, (const uint8_t * const*)img_frame->data,
-                  img_frame->linesize, 0, img_frame->height, 
-                  rgba_buffer, rgba_linesize);
+    rc = sws_scale(sws_ctx, (const uint8_t * const*)src_data,
+                  src_linesize, 0, srcH, 
+                  dst_data, dst_linesize);
     if (rc < 0) 
     {
         fprintf(stderr, "Could not convert image\n");
@@ -615,95 +621,16 @@ int frame_scale_and_convert(uint8_t **rgba_buffer, int *rgba_linesize, int width
 
     return rc;    
 }
-// version with scaling using (by?) SDL_UpdateTexture
-int img_texture_upload_v1(int x, int y, int width, int height, int img_size, int alpha_size, void *img_data, void *alpha_data)
-{
-    int rgba_linesize[4], alpha_linesize[4];
-    uint8_t *rgba_buffer[4], *alpha_buffer[4];
-    int rc;
-    enum AVPixelFormat img_pix_fmt = AV_PIX_FMT_RGB32; 
-    enum AVPixelFormat alpha_pix_fmt = AV_PIX_FMT_GRAY8;
 
-    dest_rectangle.x = x;
-    dest_rectangle.y = y;
-    dest_rectangle.w = width;
-    dest_rectangle.h = height;  
-
-    // decode image
- 
-    rc = get_image_frame(img_codec_id, img_size, img_data, img_frame);
-    if (rc == 0)
-    {
-        width = img_frame->width;
-        height = img_frame->height;
-  
-        rc = av_image_alloc(rgba_buffer, rgba_linesize, width, height, img_pix_fmt, 1);
-        if (rc < 0) 
-            fprintf(stderr, "Could not allocate destination image\n");
-        else
-        {
-            rc = frame_scale_and_convert( rgba_buffer, rgba_linesize, width, height, img_pix_fmt,  img_frame);
-            if (rc < 0) 
-                fprintf(stderr, "Could not convert destination image\n");
-        }
-        
-        av_frame_unref(img_frame);     
-    }
-    if (rc < 0)
-        return rc;
-
-    // decode and set alpha
-
-    if(alpha_size != 0)  
-    {
-        rc = get_image_frame(alpha_codec_id, alpha_size, alpha_data, img_frame);
-        if (rc == 0)
-        {           
-            // Copy alpha channel to image
-            int x, y, dst_line_size = rgba_linesize[0], src_line_size = img_frame->linesize[0];
-            uint8_t *dst, *src;
-
-            dst = rgba_buffer[0];
-            src = img_frame->data[0]; 
-            for (y = 0; y < height; y++)
-            {
-                for (int x=0; x < width; x++) 
-                    dst[(x<<2)+3] = src[x];
-                dst += dst_line_size;
-                src += src_line_size;
-            }
-            av_frame_unref(img_frame);       
-        }
-        else
-            return rc;
-    }
-
-    // update img texture
-
-    SDL_LockMutex(img_stream_mutex);
-    rc = SDL_UpdateTexture(img_texture, &dest_rectangle, rgba_buffer[0], rgba_linesize[0]);
-    if(rc != 0)
-    {  
-        fprintf(stderr, "after SDL_UpdateTexture : %d\n", rc);
-        fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
-    }
-    release_current_context();
-    SDL_UnlockMutex(img_stream_mutex);
-
-    av_freep(&rgba_buffer[0]);       
-
-    return rc;
-}
 
 
 int img_texture_upload(int x, int y, int width, int height, int img_size, int alpha_size, void *img_data, void *alpha_data)
 {
-    int rgba_linesize[4], alpha_linesize[4];
-    uint8_t *rgba_buffer[4], *alpha_buffer[4];
-    int rc;
+    int rgba_linesize[4], rgba_scaled_linesize[4];
+    uint8_t *rgba_buffer[4], *rgba_scaled_buffer[4];
+    int _width, _height, rc;
     enum AVPixelFormat img_pix_fmt = AV_PIX_FMT_RGB32; 
-    enum AVPixelFormat alpha_pix_fmt = AV_PIX_FMT_GRAY8;
-
+  
     dest_rectangle.x = x;
     dest_rectangle.y = y;
     dest_rectangle.w = width;
@@ -714,64 +641,85 @@ int img_texture_upload(int x, int y, int width, int height, int img_size, int al
     rc = get_image_frame(img_codec_id, img_size, img_data, img_frame);
     if (rc == 0)
     {
-        rc = av_image_alloc(rgba_buffer, rgba_linesize, width, height, img_pix_fmt, 1);
+        _width = img_frame->width;
+        _height = img_frame->height;
+  
+        rc = av_image_alloc(rgba_buffer, rgba_linesize, _width, _height, img_pix_fmt, 1);
         if (rc < 0) 
             fprintf(stderr, "Could not allocate destination image\n");
         else
         {
-            rc = frame_scale_and_convert( rgba_buffer, rgba_linesize, width, height, img_pix_fmt,  img_frame);
+            rc = frame_scale_and_convert( _width, _height, img_frame->format, img_frame->data, img_frame->linesize,
+                                          _width, _height, img_pix_fmt, rgba_buffer, rgba_linesize);
             if (rc < 0) 
+            {
+                av_freep(&rgba_buffer[0]);
                 fprintf(stderr, "Could not convert destination image\n");
+            }
         }
-        
         av_frame_unref(img_frame);     
     }
     if (rc < 0)
+    {
+        fprintf(stderr, "Image processing error\n");   
         return rc;
-
+    }
+        
     // decode and set alpha
 
     if(alpha_size != 0)  
     {
         rc = get_image_frame(alpha_codec_id, alpha_size, alpha_data, img_frame);
-        if (rc == 0)
-        {           
-            rc = av_image_alloc(alpha_buffer, alpha_linesize, width, height, alpha_pix_fmt, 4);
-            if (rc < 0) 
-                fprintf(stderr, "Could not allocate alpha channel \n");
-            else
-            {
-                rc = frame_scale_and_convert(alpha_buffer, alpha_linesize, width, height, alpha_pix_fmt, img_frame);
-                if (rc < 0) 
-                    fprintf(stderr, "Could not convert alpha channel \n");
-                else
-                {
-                    // Copy alpha channel to image
-                    int x, y, dst_line_size = rgba_linesize[0], src_line_size = alpha_linesize[0];
-                    uint8_t *dst, *src;
-
-                    dst = rgba_buffer[0];
-                    src = alpha_buffer[0];
-                    for (y = 0; y < height; y++)
-                    {
-                        for (int x=0; x < width; x++) 
-                            dst[(x<<2)+3] = src[x];
-                        dst += dst_line_size;
-                        src += src_line_size;
-                    }
-                }
-            } 
-            av_freep(&alpha_buffer[0]);
-            av_frame_unref(img_frame);       
-        }
         if (rc < 0)
-            return rc;
+        {
+            fprintf(stderr, "Alpha processing error\n"); 
+            return rc;  // а может он и без альфы пусть работает?
+        }
+         
+        // Copy alpha channel to image
+
+        uint8_t *dst, *src;
+        int x, y, dst_line_size = rgba_linesize[0], src_line_size = img_frame->linesize[0];
+    
+        dst = rgba_buffer[0];
+        src = img_frame->data[0]; 
+        for (y = 0; y < _height; y++)
+        {
+            for (int x=0; x < _width; x++) 
+                dst[(x<<2)+3] = src[x];
+            dst += dst_line_size;
+            src += src_line_size;
+        }
+        av_frame_unref(img_frame);        
+    }
+
+    // scale image with restored alpha
+
+    rc = av_image_alloc(rgba_scaled_buffer, rgba_scaled_linesize, width, height, img_pix_fmt, 1);
+    if (rc < 0) 
+        fprintf(stderr, "Could not allocate scaled image\n");
+    else
+    {
+        rc = frame_scale_and_convert( _width, _height, img_pix_fmt, rgba_buffer, rgba_linesize,
+                                        width, height, img_pix_fmt, rgba_scaled_buffer, rgba_scaled_linesize);
+                                         
+        if (rc < 0)
+        {
+            av_freep(&rgba_scaled_buffer[0]);
+            fprintf(stderr, "Could not scale destination image\n");
+        }
+    }
+    av_freep(&rgba_buffer[0]);
+    if (rc < 0)
+    {
+        fprintf(stderr, "Image scaling error\n");
+        return rc;
     }
 
     // update img texture
 
     SDL_LockMutex(img_stream_mutex);
-    rc = SDL_UpdateTexture(img_texture, &dest_rectangle, rgba_buffer[0], rgba_linesize[0]);
+    rc = SDL_UpdateTexture(img_texture, &dest_rectangle, rgba_scaled_buffer[0], rgba_scaled_linesize[0]);
     if(rc != 0)
     {  
         fprintf(stderr, "after SDL_UpdateTexture : %d\n", rc);
@@ -780,7 +728,7 @@ int img_texture_upload(int x, int y, int width, int height, int img_size, int al
     release_current_context();
     SDL_UnlockMutex(img_stream_mutex);
 
-    av_freep(&rgba_buffer[0]);       
+    av_freep(&rgba_scaled_buffer[0]);       
 
     return rc;
 }
@@ -848,7 +796,6 @@ int img_texture_upload_hw(int x, int y, int width, int height, int img_size, int
                             if (rc < 0)
                             fprintf(stderr, "Could not add fragment to image \n");   
                         }
-                        
                     }
                     if (SDL_SetRenderTarget(renderer, NULL) < 0)    // target = window
                         fprintf(stderr, "Could not restore the render \n");
@@ -1025,7 +972,7 @@ int img_append_init(int img_size, int alpha_size, void *img_data, void *alpha_da
     }
     av_frame_unref(img_frame);
 
-    img_texture = SDL_CreateTexture(renderer,  SDL_PIXELFORMAT_ARGB8888, img_texture_access /* SDL_TEXTUREACCESS_STREAMING / SDL_TEXTUREACCESS_STATIC */, default_width, default_height);     
+    img_texture = SDL_CreateTexture(renderer,  SDL_PIXELFORMAT_ARGB8888, img_texture_access, default_width, default_height);     
     if(img_texture == NULL)
     {  
         fprintf(stderr, "SDL_GetError: %s\n", SDL_GetError());
@@ -1071,11 +1018,8 @@ int vp_append_img(int x, int y, int width, int height, int img_size, int alpha_s
             fprintf(stderr, "Could not upload img_texture\n"); 
     }
 
-    if(rc != 0)
-        img_is_frame = 0;
-    else
-        img_is_frame = is_frame;
-
+    img_is_frame = rc < 0 ? 0 : is_frame;
+ 
     return rc;
 }
 
@@ -4455,14 +4399,14 @@ vp_handle_t vp_open(const char *url, char *img_mime_type, char *alpha_mime_type,
         is->filename = NULL;
     }  
     else
-      is = stream_open(url, NULL);
-
-    if (!is) 
     {
-        av_log(NULL, AV_LOG_FATAL, "Failed to initialize VideoState!\n");
-        do_exit(NULL);
+        is = stream_open(url, NULL);
+        if (!is) 
+        {
+            av_log(NULL, AV_LOG_FATAL, "Failed to initialize VideoState!\n");
+            do_exit(NULL);
+        }
     }
-
     is->overlay = is_overlay;
     is->autoresize = is_auto_resize;
 
@@ -4472,7 +4416,8 @@ vp_handle_t vp_open(const char *url, char *img_mime_type, char *alpha_mime_type,
         av_dict_set(&is->codec_opts, "flags", "low_delay", 0);
     }
 
-    if(is->filename == NULL)
+    // if(is->filename == NULL) 
+    if(img_mime_type != NULL)
     {           
         img_frame = av_frame_alloc();
         if (img_frame == NULL)
@@ -4497,8 +4442,8 @@ vp_handle_t vp_open(const char *url, char *img_mime_type, char *alpha_mime_type,
                 do_exit(NULL);
             } 
         }
-
-        video_open(is);
+        if(is->filename == NULL)
+            video_open(is);
     }
     else
     {
