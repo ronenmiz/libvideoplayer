@@ -458,7 +458,7 @@ struct buffer_data
     size_t size; // size left in the buffer
 };
 
-// read_packet is used by avio_alloc_context as a callback
+/* read_packet is used by avio_alloc_context as a callback (see get_image_frame) */
 static int read_packet(void *opaque, uint8_t *buf, int buf_size)
 {
     struct buffer_data *bd = (struct buffer_data *)opaque;
@@ -475,6 +475,7 @@ static int read_packet(void *opaque, uint8_t *buf, int buf_size)
     return buf_size;
 }
 
+/* get_image_frame decodes raw image data into AVFrame */
 int get_image_frame(int codec_id, int img_size, void *img_data, AVFrame *frame)
 {
     AVFormatContext *fmt_ctx = NULL;
@@ -636,6 +637,11 @@ int frame_scale_and_convert(int srcW, int srcH, enum AVPixelFormat srcFormat, ui
     return rc;    
 }
 
+/* img_texture_upload performs decoding of raw image data (whole frame or any rectangle representing recent change) 
+ * and alpha channel data optionally coming as a separate image. 
+ * After pixel format conversion to RGBA, image data and alpha are blended in the image buffer and scaled to specified width, height.
+ * The result is used to update img_texture, where a complete frame is being prepared. 
+ */ 
 int img_texture_upload(int x, int y, int width, int height, int img_size, int alpha_size, void *img_data, void *alpha_data)
 {
     int rgba_linesize[4], rgba_scaled_linesize[4];
@@ -744,7 +750,9 @@ int img_texture_upload(int x, int y, int width, int height, int img_size, int al
     return rc;
 }
 
-/* img_texture_upload_hw provides alpha blending by SDL using hardware acceleration (if available). 
+/* img_texture_upload_hw, similarly to img_texture_upload, performs decoding of raw image data 
+ * (whole frame or any rectangle representing recent change) and alpha channel data coming as a separate image to prepare the result in img_texture.
+ * The difference is alpha blending by SDL using hardware acceleration (if available) and scaling as a part of copying one texture into another (without using swsContext). 
  * It supposed to use with IYUV image and RGBA alpha image. 
  * Otherwise use img_texture_upload.
  */ 
@@ -802,7 +810,7 @@ int img_texture_upload_hw(int x, int y, int width, int height, int img_size, int
      * dstRGB = (srcRGB * srcA) + dstRGB 
      * dstA = dstA
      */
-    rc = SDL_RenderCopy(renderer, img_fragment_texture, &src_rectangle, &src_rectangle); //
+    rc = SDL_RenderCopy(renderer, img_fragment_texture, &src_rectangle, &src_rectangle);
     if (rc < 0) {
         fprintf(stderr, "Could not add alpha fragment to image fragment \n");
         goto finish_with_render_target_restore;
