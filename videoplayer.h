@@ -28,7 +28,7 @@ void vp_terminate();
 
 void vp_toggle_full_screen();
 
-vp_handle_t vp_open(const char *url, int is_paused, int is_auto_resize, int is_overlay, int is_low_latency);
+vp_handle_t vp_open(const char *url, char *img_mime_type, char *alfa_mime_type, int is_paused, int is_auto_resize, int is_overlay, int is_low_latency);
 
 void vp_close(vp_handle_t handle);
 
